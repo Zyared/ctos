@@ -4,14 +4,9 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="a635eedf-64c0-4f36-b041-33d45e74be22" name="Changes" comment="Version 0.0.0.2">
-      <change afterPath="$PROJECT_DIR$/ZeroDownModule.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/sound/click.mp3" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/sound/fail.mp3" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/sound/lock_open.mp3" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/sound/pulse.mp3" afterDir="false" />
+    <list default="true" id="a635eedf-64c0-4f36-b041-33d45e74be22" name="Changes" comment="Zero-Day Version 0.0.1">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/main.py" beforeDir="false" afterPath="$PROJECT_DIR$/main.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/ZeroDownModule.py" beforeDir="false" afterPath="$PROJECT_DIR$/ZeroDownModule.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -157,7 +152,15 @@
       <option name="project" value="LOCAL" />
       <updated>1764673532329</updated>
     </task>
-    <option name="localTasksCounter" value="3" />
+    <task id="LOCAL-00003" summary="Zero-Day Version 0.0.1">
+      <option name="closed" value="true" />
+      <created>1764790583036</created>
+      <option name="number" value="00003" />
+      <option name="presentableId" value="LOCAL-00003" />
+      <option name="project" value="LOCAL" />
+      <updated>1764790583036</updated>
+    </task>
+    <option name="localTasksCounter" value="4" />
     <servers />
   </component>
   <component name="Vcs.Log.Tabs.Properties">
@@ -174,6 +177,7 @@
   <component name="VcsManagerConfiguration">
     <MESSAGE value="Version 0.0.0.1" />
     <MESSAGE value="Version 0.0.0.2" />
-    <option name="LAST_COMMIT_MESSAGE" value="Version 0.0.0.2" />
+    <MESSAGE value="Zero-Day Version 0.0.1" />
+    <option name="LAST_COMMIT_MESSAGE" value="Zero-Day Version 0.0.1" />
   </component>
 </project>
