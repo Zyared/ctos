@@ -7,10 +7,7 @@ from NetworkSnifferModule import NetworkSnifferModule
 import pygame
 import os
 from DataExfilModule import DataExfilModule
-
-
-
-
+from ZeroDownModule import ZeroDownModule
 
 class CtOSMenu:
     def __init__(self, root):
@@ -705,8 +702,40 @@ class CtOSMenu:
         elif name == "DATA EXFIL":
             self.sounds["glitchy_exploit"].play()
             self.show_watchdogs_loader(self.launch_exfil)
+        elif name == "ZERO-DAY":
+            self.sounds["glitchy_exploit"].play()
+            self.show_watchdogs_loader(self.launch_zero_day)
         else:
             self.show_overlay_message(f"{name}\nMODULE NOT INSTALLED", "#aaaaaa")
+
+    def launch_zero_day(self):
+        # остановить граф-меню
+        self.stop_graph()
+        self.state = "zero_day"
+
+        # очистить сцену
+        self.canvas.delete("all")
+
+        # нарисовать МИВЛГУ внизу справа
+        self.mivlgu_x = self.canvas.winfo_screenwidth() - 20
+        self.mivlgu_y = self.canvas.winfo_screenheight() - 20
+
+        self.mivlgu_text = self.canvas.create_text(
+            self.mivlgu_x, self.mivlgu_y,
+            anchor="se",
+            text="МИВЛГУ",
+            fill="white",
+            font=("Arial Black", 22),
+            tags=("mivlgu",)
+        )
+
+        # 🔹 запускаем ZeroDownModule (мини-игра Zero-Day)
+        # у него вся логика стартует прямо в __init__, .start() НЕ нужен
+        self.zero_day = ZeroDownModule(self.canvas, self.root, self.return_to_menu)
+
+        # включаем глич для МИВЛГУ
+        self.schedule_mivlgu_glitch()
+        self.force_mivlgu_top()
 
     def launch_exfil(self):
         self.stop_graph()
