@@ -170,33 +170,108 @@ class ZeroDownModule:
         """
         self.clear_graph()
         r = 2
-        self.add_node("start", 0, 2, TYPE_START)
-        self.add_node("line", 1, 2, TYPE_LINE, rotation=1)        # горизонтальная линия
-        self.add_node("corner", 2, 2, TYPE_CORNER, rotation=1)    # угол
-        self.add_node("corner2", 2, 1, TYPE_CORNER, rotation=1)  # угол
-        self.add_node("cross", 3, 1, TYPE_CROSS)                  # крест
-        self.add_node("corner3", 3, 0, TYPE_CORNER, rotation=1)  # угол
-        self.add_node("corner4", 3, 2, TYPE_CORNER, rotation=1)  # угол
-        self.add_node("line2", 4, 0, TYPE_LINE, rotation=1)        # горизонтальная линия
-        self.add_node("line3", 4, 2, TYPE_LINE, rotation=1)        # горизонтальная линия
-        self.add_node("corner5", 5, 0, TYPE_CORNER, rotation=1)  # угол
-        self.add_node("corner6", 5, 2, TYPE_CORNER, rotation=1)  # угол
-        self.add_node("gate", 5, 1, TYPE_GATE, gate_required=2)   # ворота, для демо 1
-        self.add_node("exit", 6, 1, TYPE_EXIT)
+        self.add_node("start", 0, 4, TYPE_START)
+        self.add_node("line1", 0, 3, TYPE_LINE, rotation=1)
+        self.add_node("corner1", 0, 2, TYPE_CORNER, rotation=1)
+        self.add_node("line2", 1, 2, TYPE_LINE, rotation=1)
+        self.add_node("cross", 2, 2, TYPE_CROSS, rotation=1)
+        self.add_node("corner2", 2, 3, TYPE_CORNER, rotation=1)
+        self.add_node("corner5", 6, 1, TYPE_CORNER, rotation=1)
+        self.add_node("corner3", 2, 1, TYPE_CORNER, rotation=1)
+        self.add_node("line3", 3, 1, TYPE_LINE, rotation=1)
+        self.add_node("line4", 4, 1, TYPE_LINE, rotation=1)
+        self.add_node("line5", 5, 1, TYPE_LINE, rotation=1)
+        self.add_node("corner4", 1, 3, TYPE_CORNER, rotation=1)
 
-        self.add_edge("start",  "line")
-        self.add_edge("line",  "corner")
-        self.add_edge("corner",  "corner2")
-        self.add_edge("corner2",  "cross")
+        self.add_node("cross2", 1, 4, TYPE_CROSS, rotation=1)
+        self.add_node("line6", 1, 5, TYPE_LINE, rotation=1)
+        self.add_node("corner6", 1, 6, TYPE_CORNER, rotation=1)
+        self.add_node("line10", 2, 6, TYPE_LINE, rotation=1)
+        self.add_node("corner14", 3, 6, TYPE_CORNER, rotation=1)
+        self.add_node("cross3", 3, 5, TYPE_CROSS, rotation=1)
+        self.add_node("line11", 2, 5, TYPE_LINE, rotation=1)
+        self.add_node("line12", 4, 5, TYPE_LINE, rotation=1)
+        self.add_node("line13", 5, 5, TYPE_LINE, rotation=2)
+        self.add_node("corner15", 6, 5, TYPE_CORNER, rotation=2)
+        self.add_node("line14", 6, 4, TYPE_LINE, rotation=2)
+        self.add_node("line15", 6, 3, TYPE_LINE, rotation=1)
+        self.add_node("corner16", 6, 6, TYPE_CORNER, rotation=3)
+        self.add_node("line16", 5, 6, TYPE_LINE, rotation=1)
+        self.add_node("line17", 4, 6, TYPE_LINE, rotation=1)
+
+        self.add_node("line7", 2, 4, TYPE_LINE, rotation=1)
+        self.add_node("corner7", 3, 4, TYPE_CORNER, rotation=1)
+        self.add_node("corner8", 3, 3, TYPE_CORNER, rotation=2)
+        self.add_node("corner9", 4, 3, TYPE_CORNER, rotation=1)
+        self.add_node("corner10", 4, 4, TYPE_CORNER, rotation=3)
+        self.add_node("corner11", 5, 4, TYPE_CORNER, rotation=2)
+        self.add_node("corner12", 5, 2, TYPE_CORNER, rotation=2)
+        self.add_node("line8", 4, 2, TYPE_LINE, rotation=1)
+        self.add_node("line9", 5, 3, TYPE_LINE, rotation=1)
+        self.add_node("corner13", 3, 2, TYPE_CORNER, rotation=1)
+
+
+        self.add_node("gate", 6, 2, TYPE_GATE, gate_required=3)
+        self.add_node("line18", 7, 2, TYPE_LINE, rotation=1)
+        self.add_node("corner17", 8, 2, TYPE_CORNER, rotation=1)
+        self.add_node("corner18", 8, 3, TYPE_CORNER, rotation=1)
+        self.add_node("corner19", 7, 3, TYPE_CORNER, rotation=1)
+        self.add_node("corner20", 7, 4, TYPE_CORNER, rotation=1)
+        self.add_node("line22", 8, 4, TYPE_LINE, rotation=1)
+        self.add_node("exit", 9, 4, TYPE_EXIT)
+
+        self.add_edge("gate", "line18")
+        self.add_edge("line18", "corner17")
+        self.add_edge("corner17", "corner18")
+        self.add_edge("corner18", "corner19")
+        self.add_edge("corner19", "corner20")
+        self.add_edge("corner20", "line22")
+        self.add_edge("line22", "exit")
+
+        self.add_edge("start","line1")
+        self.add_edge("line1", "corner1")
+        self.add_edge("corner1", "line2")
+        self.add_edge("line2", "cross")
+        self.add_edge("cross", "corner2")
         self.add_edge("cross", "corner3")
-        self.add_edge("cross",  "corner4")
-        self.add_edge("corner3", "line2")
-        self.add_edge("corner4",  "line3")
-        self.add_edge("line2", "corner5")
-        self.add_edge("line3", "corner6")
-        self.add_edge("corner5",  "gate")
-        self.add_edge("corner6",  "gate")
-        self.add_edge("gate", "exit")
+
+        self.add_edge("corner2", "corner4")
+        self.add_edge("corner3", "line3")
+        self.add_edge("line3", "line4")
+        self.add_edge("line4", "line5")
+        self.add_edge("line5", "corner5")
+        self.add_edge("corner5", "gate")
+
+        self.add_edge("corner4", "cross2")
+        self.add_edge("cross2", "line6")
+        self.add_edge("line6", "corner6")
+        self.add_edge("corner6", "line10")
+        self.add_edge("line10", "corner14")
+        self.add_edge("corner14", "cross3")
+        self.add_edge("cross3", "line11")
+        self.add_edge("cross3", "line12")
+        self.add_edge("line12", "line13")
+        self.add_edge("line13", "corner15")
+        self.add_edge("corner15", "line14")
+        self.add_edge("corner15", "corner16")
+        self.add_edge("corner16", "line16")
+        self.add_edge("line16", "line17")
+        self.add_edge("line14", "line15")
+        self.add_edge("line15", "gate")
+
+        self.add_edge("cross2", "line7")
+        self.add_edge("line7", "corner7")
+        self.add_edge("corner7", "corner8")
+        self.add_edge("corner8", "corner9")
+        self.add_edge("corner9", "corner10")
+        self.add_edge("corner10", "corner11")
+        self.add_edge("corner11", "line9")
+        self.add_edge("line9", "corner12")
+        self.add_edge("corner12", "gate")
+        self.add_edge("corner12", "line8")
+        self.add_edge("line8", "corner13")
+
+
     # =================== ГЕОМЕТРИЯ И НАПРАВЛЕНИЯ =================== #
     def compute_layout(self, w: int, h: int):
         """
@@ -817,10 +892,10 @@ class ZeroDownModule:
 # ========================= ЛОКАЛЬНЫЙ ТЕСТ ========================= #
 if __name__ == "__main__":
     root = tk.Tk()
-    root.geometry("1280x720")
+    #root.geometry("1280x720")
     root.title("Zero-Day WD Ports Template")
     # можно включить фуллскрин:
-    # root.attributes("-fullscreen", True)
+    root.attributes("-fullscreen", True)
     canvas = tk.Canvas(root, bg="black", width=1280, height=720)
     canvas.pack(fill="both", expand=True)
     def back():
