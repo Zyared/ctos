@@ -1,849 +1,470 @@
 import tkinter as tk
-import random
+import math
 import os
-
-# Для звука на Windows. На других системах просто игнорируется.
 try:
     import winsound
 except ImportError:
     winsound = None
-
-
-class ZeroDownNode:
+# --------- Типы узлов --------- #
+TYPE_NORMAL = "normal"   # обычный узел
+TYPE_GATE = "gate"       # ворота (замок)
+TYPE_START = "start"     # старт
+TYPE_EXIT = "exit"       # финиш
+class GraphNode:
     """
-    Узел сетки.
-    Порты: 0 = UP, 1 = RIGHT, 2 = DOWN, 3 = LEFT
+    Узел графа в стиле Watch Dogs.
+    direction: 0=UP, 1=RIGHT, 2=DOWN, 3=LEFT
     """
-    def __init__(self, row, col, node_type,
-                 rotation=0,
-                 is_source=False,
-                 is_target=False,
-                 is_gate=False,
-                 gate_required=2):
-        self.row = row
+    def __init__(self, node_id, col, row, ntype=TYPE_NORMAL, direction=0, gate_required=1):
+        self.id = node_id
         self.col = col
-        self.node_type = node_type  # "line", "corner", "tee", "cross", "empty"
-        self.rotation = rotation    # 0..3
-
-        self.is_source = is_source
-        self.is_target = is_target
-        self.is_gate = is_gate
-        self.gate_required = gate_required
-        self.gate_unlocked = False
-
+        self.row = row
+        self.ntype = ntype
+        self.direction = direction % 4
+        self.gate_required = gate_required  # сколько входов нужно, чтобы ворота считались запитанными
         self.powered = False
-
-    @property
-    def base_ports(self):
-        """
-        Порты при rotation = 0.
-        """
-        if self.node_type == "empty":
-            return set()
-
-        if self.is_source:
-            # Источник — бьёт вверх.
-            return {0}
-        if self.is_target:
-            # целевой замок принимает питание с ЛЮБОЙ стороны
-            return {0, 1, 2, 3}
-
-        if self.is_gate:
-            # Ворота могут принимать питание с любых сторон.
-            return {0, 1, 2, 3}
-
-        if self.node_type == "line":
-            # Базовая линия — вертикальная (UP-DOWN).
-            return {0, 2}
-        if self.node_type == "corner":
-            # Базовый угол — UP-RIGHT.
-            return {0, 1}
-        if self.node_type == "tee":
-            # Базовый T — UP-RIGHT-LEFT (без низа).
-            return {0, 1, 3}
-        if self.node_type == "cross":
-            return {0, 1, 2, 3}
-
-        return set()
-
-    @property
-    def ports(self):
-        """
-        Порты с учётом поворота.
-        """
-        return {(p + self.rotation) % 4 for p in self.base_ports}
-
-
 class ZeroDownModule:
     """
-    Мини-игра Zero-Day в стиле взлома сети из Watch Dogs.
+    Шаблон мини-игры Zero-Day в стиле Watch Dogs.
+    Главное:
+      • узлы — чёрные круги с пунктирной окружностью и белым указателем направления;
+        при активации указатель светится синим;
+      • связи — серые линии между узлами, при активном обоих концах становятся синими;
+      • START — чёрный ромб с 4 маленькими белыми ромбами;
+      • GATE — чёрный ромб с белым замком;
+      • EXIT — чёрный ромб, по контуру пульсация белым, при достижении мигает зелёным;
+      • логика питания по направлению: из START сигнал идёт по графу
+        только по рёбрам, куда «смотрит» указатель.
     """
-
     def __init__(self, canvas: tk.Canvas, root: tk.Tk, on_exit):
         self.canvas = canvas
         self.root = root
         self.on_exit = on_exit
-
-        # Размер сетки
-        self.size = 8
-        self.grid = []
-
-        # Геометрия отрисовки
-        self.margin = 80
-        self.cell_size = 70
+        # Рендер-параметры
         self.layer_tag = "zero_down_layer"
-
-        # Таймер
-        self.total_time = 40
-        self.time_left = self.total_time
-        self.timer_id = None
-        self.game_over = False
-
-        # Флаг, чтобы различать успех/фейл
-        self.success_shown = False
-
-        # Звуки
+        self.bg_color = "black"
+        self.grid_spacing_x = 160
+        self.grid_spacing_y = 160
+        self.origin_x = 200
+        self.origin_y = 220
+        # Граф
+        self.nodes: dict[str, GraphNode] = {}
+        self.edges: list[tuple[str, str]] = []
+        self.adj: dict[str, list[str]] = {}
+        self.start_id = None
+        self.exit_id = None
+        # Анимация
+        self.running = True
+        self.ticks = 0
+        # Звуки (опционально)
         self.sounds = {
-            "click": os.path.join("sound", "click.mp3"),
-            "lock_open": os.path.join("sound", "lock_open.mp3"),
-            "fail": os.path.join("sound", "fail.mp3"),
+            "click": os.path.join("sound", "click.wav"),
+            "success": os.path.join("sound", "lock_open.wav"),
         }
-
-        # Кнопка EXIT
-        self.exit_btn_bbox = None
-
-        # События
+        # Сборка уровня (демо) — ИМЕННО ЭТУ ЧАСТЬ ТЫ БУДЕШЬ МЕНЯТЬ ПОД СВОИ ПАТТЕРНЫ
+        self.build_demo_level()
+        # Привязка событий
         self.canvas.bind("<Button-1>", self.on_click)
         self.root.bind("<Escape>", self.handle_escape)
-
-        # Генерация уровня
-        self.generate_level()
-        # Перемешиваем повороты, чтобы уровень не был решён сразу
-        self.randomize_rotations()
-        # Пересчитываем питание (после перемешивания всё будет обесточено)
+        # Первый пересчёт и отрисовка
         self.recalculate_power()
         self.redraw()
-        self.start_timer()
+        # Запуск анимации
+        self.animate()
+    # ======================== УРОВЕНЬ / ШАБЛОН ======================== #
+    def clear_graph(self):
+        self.nodes.clear()
+        self.edges.clear()
+        self.adj.clear()
+        self.start_id = None
+        self.exit_id = None
+    def add_node(self, node_id, col, row, ntype=TYPE_NORMAL, direction=0, gate_required=1):
+        """
+        Добавить узел в сетке (col, row).
+        Узлы автоматически переводятся в координаты пикселей.
+        """
+        node = GraphNode(node_id, col, row, ntype, direction, gate_required)
+        self.nodes[node_id] = node
+        self.adj.setdefault(node_id, [])
+        if ntype == TYPE_START:
+            self.start_id = node_id
+        if ntype == TYPE_EXIT:
+            self.exit_id = node_id
+    def add_edge(self, a_id, b_id):
+        """Добавить неориентированное ребро между двумя узлами."""
+        if a_id not in self.nodes or b_id not in self.nodes:
+            return
+        self.edges.append((a_id, b_id))
+        self.adj.setdefault(a_id, []).append(b_id)
+        self.adj.setdefault(b_id, []).append(a_id)
+    def build_demo_level(self):
+        """
+        ДЕМОНСТРАЦИОННЫЙ ПАТТЕРН:
+        ОДНА ЛИНИЯ ВИДОВ УЗЛОВ:
+            START -> N1 -> GATE -> N2 -> EXIT
+        • Узлы стоят на одной строке row=2 (для примера).
+        • Ты можешь полностью переписать эту функцию под свою карту:
+            - добавлять узлы self.add_node(...)
+            - добавлять рёбра self.add_edge(...)
+        """
+        self.clear_graph()
 
-    # ---------------------- ЗВУК ---------------------- #
+        self.add_node("start", 0, 2, TYPE_START)
+        self.add_node("n1", 1, 2, TYPE_NORMAL, direction=1)
+        self.add_node("e2", 1, 1, TYPE_NORMAL, direction=1)
+        self.add_node("n3", 2, 1, TYPE_NORMAL, direction=1)
+        self.add_node("n4", 3, 1, TYPE_NORMAL, direction=1)
+        self.add_node("n5", 2, 2, TYPE_NORMAL, direction=1)
+        # Ворота: пока сделаем, что им достаточно 1 входа (gate_required=1)
+        self.add_node("gate", 3, 2, TYPE_GATE, gate_required=0)
+        self.add_node("n7", 4, 2, TYPE_NORMAL, direction=1)
+        self.add_node("exit", 5, 2, TYPE_EXIT)
+        # Связи по прямой
+        self.add_edge("start", "n1")
+        self.add_edge("n1", "e2")
+        self.add_edge("e2", "n3")
+        self.add_edge("n3", "n4")
+        self.add_edge("n4", "gate")
+        self.add_edge("n1", "n5")
+        self.add_edge("n5", "gate")
+        self.add_edge("gate", "n7")
+        self.add_edge("n7", "exit")
+    # ======================== ЛОГИКА ПИТАНИЯ ======================== #
+    def node_coords(self, node: GraphNode):
+        """Перевод (col,row) в пиксели."""
+        x = self.origin_x + node.col * self.grid_spacing_x
+        y = self.origin_y + node.row * self.grid_spacing_y
+        return x, y
+    @staticmethod
+    def dir_from_to(a: GraphNode, b: GraphNode):
+        """
+        Геометрическое направление из A к B по сетке (4 направления).
+        Если не по прямой — возвращает None.
+        """
+        dc = b.col - a.col
+        dr = b.row - a.row
+        if dc == 0 and dr < 0:
+            return 0  # UP
+        if dc > 0 and dr == 0:
+            return 1  # RIGHT
+        if dc == 0 and dr > 0:
+            return 2  # DOWN
+        if dc < 0 and dr == 0:
+            return 3  # LEFT
+        return None
+    def recalculate_power(self):
+        """
+        Питание распространяется так:
+        • START всегда запитан.
+        • Из узла сигнал идёт только по тем рёбрам, куда смотрит указатель (direction).
+        • GATE запитывается, когда к нему пришло нужное количество сигналов (gate_required).
+        • EXIT считается достигнутым, если запитан.
+        """
+        # сброс
+        for node in self.nodes.values():
+            node.powered = False
+        if not self.start_id or self.start_id not in self.nodes:
+            return
+        # START запитан по умолчанию
+        self.nodes[self.start_id].powered = True
+        # для ворот — учёт количества входов
+        gate_inputs: dict[str, int] = {}
+        queue = [self.start_id]
+        visited = set()
+        while queue:
+            nid = queue.pop(0)
+            if nid in visited:
+                continue
+            visited.add(nid)
+            node = self.nodes[nid]
+            for nb_id in self.adj.get(nid, []):
+                nb = self.nodes[nb_id]
+                # направление от node к nb
+                d = self.dir_from_to(node, nb)
+                if d is None:
+                    continue
+                # node может давать питание только в сторону direction
+                if node.direction != d and node.ntype != TYPE_START:
+                    # START не имеет направления — условно «раздаёт» всем соседям
+                    continue
+                if nb.ntype == TYPE_GATE:
+                    # увеличиваем число входов
+                    gate_inputs[nb_id] = gate_inputs.get(nb_id, 0) + 1
+                    if gate_inputs[nb_id] >= max(1, nb.gate_required) and not nb.powered:
+                        nb.powered = True
+                        queue.append(nb_id)
+                else:
+                    if not nb.powered:
+                        nb.powered = True
+                        queue.append(nb_id)
+    def is_exit_powered(self):
+        return self.exit_id in self.nodes and self.nodes[self.exit_id].powered
+    # ======================== ОТРИСОВКА ======================== #
+    def redraw(self):
+        self.canvas.delete(self.layer_tag)
+        w = int(self.canvas["width"])
+        h = int(self.canvas["height"])
+        # фон
+        self.canvas.create_rectangle(
+            0, 0, w, h,
+            fill=self.bg_color,
+            outline="",
+            tags=self.layer_tag
+        )
+        # лёгкая рамка панели
+        panel_margin = 80
+        self.canvas.create_rectangle(
+            panel_margin, panel_margin,
+            w - panel_margin, h - panel_margin,
+            outline="#1b2835",
+            width=3,
+            tags=self.layer_tag
+        )
+        # заголовок
+        self.canvas.create_text(
+            w // 2, panel_margin - 30,
+            text="CtOS  //  ZERO-DAY NODE GRID (TEMPLATE)",
+            fill="#7de4ff",
+            font=("Consolas", 16, "bold"),
+            tags=self.layer_tag
+        )
+        # подсказка
+        self.canvas.create_text(
+            w // 2, panel_margin - 10,
+            text="Rotate nodes to route the signal from START -> GATE -> EXIT",
+            fill="#496a7f",
+            font=("Consolas", 10),
+            tags=self.layer_tag
+        )
+        # кнопка EXIT в правом верхнем углу
+        bx1, by1, bx2, by2 = w - 160, panel_margin - 40, w - 60, panel_margin - 10
+        self.exit_btn_bbox = (bx1, by1, bx2, by2)
+        self.canvas.create_rectangle(
+            bx1, by1, bx2, by2,
+            outline="#ff4444", width=2,
+            tags=self.layer_tag
+        )
+        self.canvas.create_text(
+            (bx1 + bx2) // 2, (by1 + by2) // 2,
+            text="EXIT",
+            fill="#ff4444",
+            font=("Consolas", 11, "bold"),
+            tags=self.layer_tag
+        )
+        # сначала рёбра
+        for a_id, b_id in self.edges:
+            a = self.nodes[a_id]
+            b = self.nodes[b_id]
+            self.draw_edge(a, b)
+        # потом узлы
+        for node in self.nodes.values():
+            self.draw_node(node)
+    def draw_edge(self, a: GraphNode, b: GraphNode):
+        ax, ay = self.node_coords(a)
+        bx, by = self.node_coords(b)
+        active = a.powered and b.powered
+        color = "#55caff" if active else "#2a3b47"
+        width = 4 if active else 2
+        self.canvas.create_line(
+            ax, ay, bx, by,
+            fill=color,
+            width=width,
+            capstyle="round",
+            tags=self.layer_tag
+        )
+    def draw_node(self, node: GraphNode):
+        x, y = self.node_coords(node)
+        if node.ntype == TYPE_NORMAL:
+            self.draw_normal_node(node, x, y)
+        elif node.ntype == TYPE_GATE:
+            self.draw_gate(node, x, y)
+        elif node.ntype == TYPE_START:
+            self.draw_start(node, x, y)
+        elif node.ntype == TYPE_EXIT:
+            self.draw_exit(node, x, y)
+    # --------- Обычный узел (круг с пунктиром и стрелкой) --------- #
+    def draw_normal_node(self, node: GraphNode, x, y):
+        outer_r = 20
+        inner_r = 14
+        # внешняя пунктирная окружность
+        self.canvas.create_oval(
+            x - outer_r, y - outer_r,
+            x + outer_r, y + outer_r,
+            outline="#233746",
+            width=2,
+            dash=(3, 3),
+            tags=self.layer_tag
+        )
+        # внутренняя заливка
+        self.canvas.create_oval(
+            x - inner_r, y - inner_r,
+            x + inner_r, y + inner_r,
+            outline="#000000",
+            fill="#000000",
+            width=2,
+            tags=self.layer_tag
+        )
+        # указатель направления
+        color = "#6fd6ff" if node.powered else "#ffffff"
+        self.draw_direction_marker(node.direction, x, y, color)
+    def draw_direction_marker(self, direction, x, y, color):
+        l = 11
+        if direction == 0:  # up
+            self.canvas.create_line(x, y, x, y - l, fill=color, width=3, tags=self.layer_tag)
+        elif direction == 1:  # right
+            self.canvas.create_line(x, y, x + l, y, fill=color, width=3, tags=self.layer_tag)
+        elif direction == 2:  # down
+            self.canvas.create_line(x, y, x, y + l, fill=color, width=3, tags=self.layer_tag)
+        elif direction == 3:  # left
+            self.canvas.create_line(x, y, x - l, y, fill=color, width=3, tags=self.layer_tag)
+    # --------- GATE: ромб с замком --------- #
+    def draw_gate(self, node: GraphNode, x, y):
+        size = 24
+        col = "#6fd6ff" if node.powered else "#ffffff"
+        self.canvas.create_polygon(
+            x, y - size,
+            x + size, y,
+            x, y + size,
+            x - size, y,
+            outline=col,
+            fill="#000000",
+            width=3,
+            tags=self.layer_tag
+        )
+        self.canvas.create_text(
+            x, y,
+            text="🔒",
+            fill=col,
+            font=("Consolas", 18),
+            tags=self.layer_tag
+        )
+    # --------- START: ромб с 4 маленькими ромбами --------- #
+    def draw_start(self, node: GraphNode, x, y):
+        size = 24
+        col = "#ffffff"
+        # большой ромб
+        self.canvas.create_polygon(
+            x, y - size,
+            x + size, y,
+            x, y + size,
+            x - size, y,
+            outline=col,
+            fill="#000000",
+            width=3,
+            tags=self.layer_tag
+        )
+        mini = 8
+        offsets = [(-10, 0), (10, 0), (0, -10), (0, 10)]
+        for dx, dy in offsets:
+            cx = x + dx
+            cy = y + dy
+            self.canvas.create_polygon(
+                cx, cy - mini,
+                cx + mini, cy,
+                cx, cy + mini,
+                cx - mini, cy,
+                outline=col,
+                fill="",
+                width=2,
+                tags=self.layer_tag
+            )
+    # --------- EXIT: пульсирующий ромб --------- #
+    def draw_exit(self, node: GraphNode, x, y):
+        size = 24
+        # пульсация по ticks
+        phase = (self.ticks // 4) % 10
+        pulse = 0.3 + 0.7 * abs(math.sin(self.ticks / 10.0))
+        if node.powered:
+            base_col = (0, int(255 * pulse), 100)  # зелёный
+        else:
+            base_col = (int(255 * pulse), int(255 * pulse), int(255 * pulse))
+        outline = "#%02x%02x%02x" % base_col
+        self.canvas.create_polygon(
+            x, y - size,
+            x + size, y,
+            x, y + size,
+            x - size, y,
+            outline=outline,
+            fill="#000000",
+            width=3,
+            tags=self.layer_tag
+        )
+        self.canvas.create_text(
+            x, y,
+            text="EXIT",
+            fill=outline,
+            font=("Consolas", 10, "bold"),
+            tags=self.layer_tag
+        )
+    # ======================== ВЗАИМОДЕЙСТВИЕ ======================== #
+    def find_node_by_point(self, x, y, radius=25):
+        """Найти ближайший узел по клику мыши."""
+        best_id = None
+        best_d2 = radius * radius
+        for nid, node in self.nodes.items():
+            nx, ny = self.node_coords(node)
+            dx = nx - x
+            dy = ny - y
+            d2 = dx * dx + dy * dy
+            if d2 <= best_d2:
+                best_d2 = d2
+                best_id = nid
+        return best_id
+    def on_click(self, event):
+        if not self.running:
+            return
+        # клик по кнопке EXIT
+        if hasattr(self, "exit_btn_bbox") and self.exit_btn_bbox is not None:
+            x1, y1, x2, y2 = self.exit_btn_bbox
+            if x1 <= event.x <= x2 and y1 <= event.y <= y2:
+                self.cleanup()
+                self.on_exit()
+                return
+        nid = self.find_node_by_point(event.x, event.y)
+        if not nid:
+            return
+        node = self.nodes[nid]
+        # START / GATE / EXIT не вращаем — это только шаблон,
+        # но можно разрешить, если захочешь.
+        if node.ntype in (TYPE_START, TYPE_GATE, TYPE_EXIT):
+            return
+        node.direction = (node.direction + 1) % 4
+        self.play_sound("click")
+        self.recalculate_power()
+        self.redraw()
+    def handle_escape(self, event=None):
+        self.cleanup()
+        self.on_exit()
+    # ======================== АНИМАЦИЯ ======================== #
+    def animate(self):
+        if not self.running:
+            return
+        self.ticks += 1
+        # Для EXIT нужна пульсация => просто перерисовываем
+        self.redraw()
+        self.root.after(80, self.animate)
+    # ======================== СЕРВИС ======================== #
     def play_sound(self, name):
         path = self.sounds.get(name)
-        if not path or not os.path.exists(path) or winsound is None:
+        if not path or winsound is None or not os.path.exists(path):
             return
         try:
             winsound.PlaySound(path, winsound.SND_FILENAME | winsound.SND_ASYNC)
         except Exception:
             pass
-
-    # ------------------ ГЕНЕРАЦИЯ УРОВНЯ ------------------ #
-    def set_node(self, r, c, node_type, rotation=0,
-                 is_source=False, is_target=False,
-                 is_gate=False, gate_required=2):
-        """
-        Удобный сеттер, чтобы не писать одно и то же.
-        """
-        self.grid[r][c] = ZeroDownNode(
-            r, c, node_type,
-            rotation=rotation,
-            is_source=is_source,
-            is_target=is_target,
-            is_gate=is_gate,
-            gate_required=gate_required
-        )
-
-    def generate_level(self):
-        """
-        Фиксированный, но красивый и извилистый лабиринт 8x8.
-
-        Структура:
-        - Источник (S) внизу.
-        - Вертикальный подъём к центральному Tee.
-        - От Tee уходят две ветки (A и B) к воротам Gate с разных сторон.
-        - Gate после 2-х входов даёт питание на путь к Target.
-        - В нескольких местах есть тупики.
-        - Всё остальное — пустота (никаких лишних кружков).
-        """
-        # Сначала — пустая сетка: все клетки "empty"
-        self.grid = [[ZeroDownNode(r, c, "empty") for c in range(self.size)]
-                     for r in range(self.size)]
-
-        # === Ключевые узлы ===
-        src_r, src_c = 7, 3           # источник внизу по центру
-        mid_r1, mid_c1 = 6, 3         # переход вверх
-        tee_r, tee_c = 5, 3           # центральный Tee (разветвитель)
-
-        gate_r, gate_c = 3, 5         # ворота
-        target_r, target_c = 2, 7     # финальный замок (справа сверху)
-
-        # --- Вертикаль: Source -> Mid -> Tee ---
-        # Источник: вертикальная линия вверх (питание вверх)
-        self.set_node(
-            src_r, src_c,
-            "line",
-            rotation=0,
-            is_source=True
-        )
-
-        # Средний сегмент над источником — тоже вертикаль
-        self.set_node(mid_r1, mid_c1, "line", rotation=0)
-
-        # Tee: принимаем поток снизу и даём влево+вправо (ветки A и B)
-        # Нужно UP-LEFT-RIGHT? Нет, мы хотим: снизу входит (2),
-        # а выходы идут влево (3) и вправо (1).
-        # Базовый tee: {0,1,3}, rotation=2 -> {2,3,1} = {DOWN,LEFT,RIGHT}
-        self.set_node(tee_r, tee_c, "tee", rotation=2)
-
-        # === ВЕТКА A: Tee -> слева к Gate ===
-        # Путь A: Tee(5,3) → A1(5,2) → A2(4,2) → A3(4,3) → A4(3,3) → A5(3,4) → Gate(3,5)
-
-        a1 = (5, 2)
-        a2 = (4, 2)
-        a3 = (4, 3)
-        a4 = (3, 3)
-        a5 = (3, 4)
-
-        # A1: Tee справа (1) -> A2 вверх (0). Нужен угол RIGHT-UP.
-        # Базовый угол {0,1} (UP-RIGHT). Нам нужен {RIGHT,UP} = то же самое.
-        self.set_node(a1[0], a1[1], "corner", rotation=0)
-
-        # A2: A1 снизу (2), A3 вправо (1), + тупик влево (3).
-        # Порты {1,2,3} -> tee rotation=2 (даёт {1,2,3}).
-        self.set_node(a2[0], a2[1], "tee", rotation=2)
-
-        # A3: A2 слева (3), A4 вверх (0) -> угол LEFT-UP.
-        # Базовый {0,1} -> rotation=3 => {3,0}.
-        self.set_node(a3[0], a3[1], "corner", rotation=3)
-
-        # A4: A3 снизу (2), A5 вправо (1) -> угол DOWN-RIGHT.
-        # Базовый {0,1} -> rotation=1 => {1,2}.
-        self.set_node(a4[0], a4[1], "corner", rotation=1)
-
-        # A5: A4 слева (3), Gate справа (1) -> линия LEFT-RIGHT.
-        # line {0,2}, rotation=1 => {1,3}.
-        self.set_node(a5[0], a5[1], "line", rotation=1)
-
-        # Тупик возле A2 слева: D2(4,1): соединён только с A2 справа.
-        d2_r, d2_c = 4, 1
-        self.set_node(d2_r, d2_c, "line", rotation=1)
-
-        # === ВЕТКА B: Tee -> через низ и правый лабиринт к Gate ===
-        # B-путь: Tee(5,3) → B1(5,4) → B2(5,5) → B3(6,5) → B4(6,6)
-        #        → B5(5,6) → B6(4,6) → B7(4,5) → Gate(3,5)
-
-        b1 = (5, 4)
-        b2 = (5, 5)
-        b3 = (6, 5)
-        b4 = (6, 6)
-        b5 = (5, 6)
-        b6 = (4, 6)
-        b7 = (4, 5)
-
-        # B1: Tee слева (3) -> B2 справа (1) -> линия LEFT-RIGHT.
-        self.set_node(b1[0], b1[1], "line", rotation=1)
-
-        # B2: B1 слева (3) -> B3 вниз (2) -> угол LEFT-DOWN.
-        # Базовый {0,1} -> rotation=2 => {2,3}.
-        self.set_node(b2[0], b2[1], "corner", rotation=2)
-
-        # B3: B2 сверху (0) -> B4 справа (1) -> угол UP-RIGHT.
-        self.set_node(b3[0], b3[1], "corner", rotation=0)
-
-        # B4: B3 слева (3), B5 вверх (0) + тупик вниз (2).
-        # Нужны {0,2,3}. tee {0,1,3} -> rotation=3 => {3,0,2}.
-        self.set_node(b4[0], b4[1], "tee", rotation=3)
-
-        # B5: B4 снизу (2) -> B6 вверх (0) -> вертикальная линия.
-        self.set_node(b5[0], b5[1], "line", rotation=0)
-
-        # B6: B5 снизу (2) -> B7 слева (3) -> угол DOWN-LEFT.
-        # базовый {0,1} -> rotation=2 => {2,3}
-        self.set_node(b6[0], b6[1], "corner", rotation=2)
-
-        # B7: B6 справа (1) -> Gate сверху (0) -> угол RIGHT-UP.
-        # базовый {0,1} уже {UP,RIGHT}, но нам {RIGHT,UP} — rotation=0 подходит.
-        self.set_node(b7[0], b7[1], "corner", rotation=0)
-
-        # Тупик D1(7,6) от B4 вниз
-        d1_r, d1_c = 7, 6
-        self.set_node(d1_r, d1_c, "line", rotation=0)
-
-        # === ВОРОТА (Gate) и путь к Target ===
-        # Gate принимают минимум 2 входа (слева и снизу)
-        self.set_node(
-            gate_r, gate_c,
-            "cross",
-            rotation=0,
-            is_gate=True,
-            gate_required=2
-        )
-
-        # От Gate вправо и вверх к Target:
-        # Gate(3,5) → C1(3,6) → C2(3,7) → Target(2,7)
-
-        c1 = (3, 6)
-        c2 = (3, 7)
-
-        # C1: Gate слева (3), C2 справа (1), тупик вверх (0)
-        # Нужны {0,1,3} -> tee rotation=0.
-        self.set_node(c1[0], c1[1], "tee", rotation=0)
-
-        # C2: C1 слева (3), Target сверху (0) -> угол LEFT-UP.
-        # базовый угол {0,1} -> rotation=3 => {3,0}.
-        self.set_node(c2[0], c2[1], "corner", rotation=3)
-
-        # Target — финальный замок
-        self.set_node(
-            target_r, target_c,
-            "cross",
-            rotation=0,
-            is_target=True
-        )
-
-        # Тупик D3(2,6) сверху от C1
-        d3_r, d3_c = 2, 6
-        self.set_node(d3_r, d3_c, "line", rotation=0)
-
-        # Больше НИКАКИХ декоративных узлов — остальные клетки остаются "empty".
-
-    def randomize_rotations(self):
-        """
-        Случайно поворачиваем все узлы, кроме источника и финальной цели.
-        Благодаря этому уровень никогда не стартует в решённом состоянии.
-        Решение уникально, но фигуры изначально стоят случайно.
-        """
-        for row in self.grid:
-            for n in row:
-                if n.node_type == "empty":
-                    continue
-                if n.is_source or n.is_target:
-                    continue
-                # все остальные можно крутить
-                n.rotation = random.randint(0, 3)
-
-    # ---------------------- ЭНЕРГИЯ ---------------------- #
-    def neighbors_for(self, r, c):
-        """
-        Соседи: (nr, nc, dir_from_here, dir_in_neighbor)
-        """
-        dirs = [(-1, 0), (0, 1), (1, 0), (0, -1)]
-        for d, (dr, dc) in enumerate(dirs):
-            nr, nc = r + dr, c + dc
-            if 0 <= nr < self.size and 0 <= nc < self.size:
-                yield nr, nc, d, (d + 2) % 4
-
-    def recalculate_power(self):
-        """
-        Пересчёт питания:
-        1) Сбрасываем всё.
-        2) Первый проход BFS: питание доходит до всех узлов, КРОМЕ цели (target),
-           но может доходить до ворот (gate).
-        3) Считаем, сколько направлений входит в gate. Если >= gate_required,
-           считаем ворота открытыми.
-        4) Второй проход BFS — теперь питание может идти через открытые ворота
-           и доходить до target.
-        """
-        # Сброс
-        source = None
-        for row in self.grid:
-            for n in row:
-                n.powered = False
-                if n.is_gate:
-                    n.gate_unlocked = False
-                if n.is_source:
-                    source = n
-
-        if not source:
-            return
-
-        # Первый проход: target ещё нельзя питать
-        self._bfs_power(source, allow_target=False)
-
-        # Подсчёт входов в gate
-        for row in self.grid:
-            for n in row:
-                if n.is_gate:
-                    cnt = self._count_gate_inputs(n)
-                    if cnt >= n.gate_required:
-                        n.gate_unlocked = True
-
-        # Второй проход: всё заново, но теперь открытые ворота проводят питание,
-        # и можно запитать target.
-        for row in self.grid:
-            for n in row:
-                if not n.is_source:
-                    n.powered = False
-        self._bfs_power(source, allow_target=True)
-
-    def _bfs_power(self, start: ZeroDownNode, allow_target: bool):
-        """
-        BFS: распространяем питание по соединённым портам.
-        Если allow_target = False, цель не будет запитываться.
-        Закрытые ворота не пропускают питание дальше.
-        """
-        queue = [start]
-        start.powered = True
-
-        while queue:
-            node = queue.pop(0)
-            r, c = node.row, node.col
-
-            # Закрытые ворота не проводят дальше (но сами могут быть запитаны)
-            if node.is_gate and not node.gate_unlocked and not node.is_source:
-                continue
-
-            for nr, nc, d_here, d_neigh in self.neighbors_for(r, c):
-                neigh = self.grid[nr][nc]
-
-                if neigh.node_type == "empty":
-                    continue
-
-                # Пока не разрешено — не запитываем target
-                if neigh.is_target and not allow_target:
-                    continue
-
-                if d_here in node.ports and d_neigh in neigh.ports:
-                    if not neigh.powered:
-                        neigh.powered = True
-                        queue.append(neigh)
-
-    def _count_gate_inputs(self, gate: ZeroDownNode) -> int:
-        """
-        Считаем, с каких сторон уже приходит реальное питание в ворота.
-        """
-        r, c = gate.row, gate.col
-        count = 0
-        for nr, nc, d_here, d_neigh in self.neighbors_for(r, c):
-            neigh = self.grid[nr][nc]
-            if neigh.powered and d_neigh in neigh.ports and d_here in gate.ports:
-                count += 1
-        return count
-
-    def is_target_powered(self) -> bool:
-        for row in self.grid:
-            for n in row:
-                if n.is_target and n.powered:
-                    return True
-        return False
-
-    # ---------------------- ОТРИСОВКА ---------------------- #
-    def redraw(self):
-        self.canvas.delete(self.layer_tag)
-
-        w = self.canvas.winfo_width()
-        h = self.canvas.winfo_height()
-        if w <= 1 or h <= 1:
-            w = self.root.winfo_screenwidth()
-            h = self.root.winfo_screenheight()
-
-        panel_w = self.size * self.cell_size + self.margin * 2
-        panel_h = self.size * self.cell_size + self.margin * 2
-        x0 = (w - panel_w) // 2
-        y0 = (h - panel_h) // 2
-
-        grid_x0 = x0 + self.margin
-        grid_y0 = y0 + self.margin
-
-        # Таймер
-        timer_color = "#7ee8ff" if self.time_left > 12 else "#ff6666"
-        self.canvas.create_text(
-            x0, y0 - 25,
-            anchor="w",
-            text=f"{self.time_left}s",
-            fill=timer_color,
-            font=("Consolas", 16, "bold"),
-            tags=self.layer_tag
-        )
-
-        # Кнопка EXIT
-        bx1 = x0 + panel_w
-        by1 = y0 - 30
-        bx0 = bx1 - 80
-        by0 = by1 - 26
-        self.exit_btn_bbox = (bx0, by0, bx1, by1)
-
-        self.canvas.create_rectangle(
-            bx0, by0, bx1, by1,
-            outline="#ff4444",
-            width=2,
-            tags=self.layer_tag
-        )
-        self.canvas.create_text(
-            (bx0 + bx1) / 2,
-            (by0 + by1) / 2,
-            text="EXIT",
-            fill="#ff4444",
-            font=("Consolas", 12, "bold"),
-            tags=self.layer_tag
-        )
-
-        base_color = "#31424f"
-        active_color = "#4fd6ff"
-
-        for r in range(self.size):
-            for c in range(self.size):
-                n = self.grid[r][c]
-                if n.node_type == "empty":
-                    # пустая клетка — ничего не рисуем
-                    continue
-
-                cx = grid_x0 + c * self.cell_size + self.cell_size // 2
-                cy = grid_y0 + r * self.cell_size + self.cell_size // 2
-                col = active_color if n.powered else base_color
-
-                # Линии от центра к портам
-                port_len = self.cell_size / 2 - 10
-                for p in n.ports:
-                    if p == 0:
-                        x2, y2 = cx, cy - port_len
-                    elif p == 1:
-                        x2, y2 = cx + port_len, cy
-                    elif p == 2:
-                        x2, y2 = cx, cy + port_len
-                    else:
-                        x2, y2 = cx - port_len, cy
-
-                    self.canvas.create_line(
-                        cx, cy, x2, y2,
-                        fill=col,
-                        width=4 if n.powered else 2,
-                        capstyle=tk.ROUND,
-                        tags=self.layer_tag
-                    )
-
-                # Источник — ромб
-                if n.is_source:
-                    d = 18
-                    self.canvas.create_polygon(
-                        cx, cy - d,
-                        cx + d, cy,
-                        cx, cy + d,
-                        cx - d, cy,
-                        outline=active_color,
-                        width=3,
-                        fill="",
-                        tags=self.layer_tag
-                    )
-                    continue
-
-                # Target — ромб с замком
-                if n.is_target:
-                    d = 22
-                    c2 = active_color if n.powered else "#ffffff"
-                    self.canvas.create_polygon(
-                        cx, cy - d,
-                        cx + d, cy,
-                        cx, cy + d,
-                        cx - d, cy,
-                        outline=c2,
-                        width=3,
-                        fill="",
-                        tags=self.layer_tag
-                    )
-                    body_w, body_h = 14, 10
-                    self.canvas.create_rectangle(
-                        cx - body_w / 2, cy + 3,
-                        cx + body_w / 2, cy + 3 + body_h,
-                        outline=c2,
-                        width=2,
-                        tags=self.layer_tag
-                    )
-                    arc_r = body_w / 2
-                    self.canvas.create_arc(
-                        cx - arc_r, cy - arc_r,
-                        cx + arc_r, cy + arc_r,
-                        start=200, extent=140,
-                        style="arc",
-                        outline=c2,
-                        width=2,
-                        tags=self.layer_tag
-                    )
-                    continue
-
-                # Ворота — кольцо с сегментами
-                if n.is_gate:
-                    ring = 22
-                    c2 = active_color if n.gate_unlocked else "#ffffff"
-                    self.canvas.create_oval(
-                        cx - ring, cy - ring,
-                        cx + ring, cy + ring,
-                        outline=c2,
-                        width=3,
-                        tags=self.layer_tag
-                    )
-                    for start in (10, 100, 190, 280):
-                        self.canvas.create_arc(
-                            cx - ring, cy - ring,
-                            cx + ring, cy + ring,
-                            start=start, extent=40,
-                            style="arc",
-                            outline=c2,
-                            width=3,
-                            tags=self.layer_tag
-                        )
-                    continue
-
-                # Обычный узел-кружок (включая тупики)
-                rad = 14
-                self.canvas.create_oval(
-                    cx - rad, cy - rad,
-                    cx + rad, cy + rad,
-                    outline=col,
-                    width=2,
-                    tags=self.layer_tag
-                )
-                tick = "#ffffff" if n.powered else "#8fa1ac"
-                t = 8
-                # вверх
-                self.canvas.create_line(
-                    cx, cy - rad - 4,
-                    cx, cy - rad - 4 - t,
-                    fill=tick, width=2,
-                    tags=self.layer_tag
-                )
-                # вниз
-                self.canvas.create_line(
-                    cx, cy + rad + 4,
-                    cx, cy + rad + 4 + t,
-                    fill=tick, width=2,
-                    tags=self.layer_tag
-                )
-                # вправо
-                self.canvas.create_line(
-                    cx + rad + 4, cy,
-                    cx + rad + 4 + t, cy,
-                    fill=tick, width=2,
-                    tags=self.layer_tag
-                )
-                # влево
-                self.canvas.create_line(
-                    cx - rad - 4, cy,
-                    cx - rad - 4 - t, cy,
-                    fill=tick, width=2,
-                    tags=self.layer_tag
-                )
-
-    # ---------------------- ВЗАИМОДЕЙСТВИЕ ---------------------- #
-    def canvas_to_cell(self, x, y):
-        """
-        Перевод координат клика в (row, col) узла.
-        """
-        w = self.canvas.winfo_width()
-        h = self.canvas.winfo_height()
-        if w <= 1 or h <= 1:
-            w = self.root.winfo_screenwidth()
-            h = self.root.winfo_screenheight()
-
-        panel_w = self.size * self.cell_size + self.margin * 2
-        panel_h = self.size * self.cell_size + self.margin * 2
-        x0 = (w - panel_w) // 2
-        y0 = (h - panel_h) // 2
-
-        gx = x - (x0 + self.margin)
-        gy = y - (y0 + self.margin)
-
-        if gx < 0 or gy < 0:
-            return None
-
-        c = int(gx // self.cell_size)
-        r = int(gy // self.cell_size)
-
-        if 0 <= r < self.size and 0 <= c < self.size:
-            return r, c
-        return None
-
-    def on_click(self, event):
-        if self.game_over:
-            return
-
-        # Проверка на клик по EXIT
-        if self.exit_btn_bbox is not None:
-            x0, y0, x1, y1 = self.exit_btn_bbox
-            if x0 <= event.x <= x1 and y0 <= event.y <= y1:
-                self.cleanup()
-                self.on_exit()
-                return
-
-        cell = self.canvas_to_cell(event.x, event.y)
-        if not cell:
-            return
-
-        r, c = cell
-        node = self.grid[r][c]
-
-        if node.node_type == "empty":
-            return
-        # Нельзя крутить источник и финальную цель (их положение фиксировано)
-        if node.is_source or node.is_target:
-            return
-
-        node.rotation = (node.rotation + 1) % 4
-        self.play_sound("click")
-
-        self.recalculate_power()
-        self.redraw()
-
-        if self.is_target_powered():
-            self.handle_success()
-
-    def handle_escape(self, event=None):
-        """
-        Esc — выход в меню CtOS.
-        """
-        self.cleanup()
-        self.on_exit()
-
-    # ---------------------- ТАЙМЕР ---------------------- #
-    def start_timer(self):
-        self.update_timer()
-
-    def update_timer(self):
-        if self.game_over:
-            return
-
-        self.time_left -= 1
-        if self.time_left < 0:
-            self.handle_fail()
-            return
-
-        self.redraw()
-        self.timer_id = self.root.after(1000, self.update_timer)
-
-    # ---------------------- КОНЕЦ ИГРЫ ---------------------- #
-    def handle_success(self):
-        if self.game_over:
-            return
-        self.game_over = True
-        self.success_shown = True
-        self.play_sound("lock_open")
-        if self.timer_id is not None:
-            try:
-                self.root.after_cancel(self.timer_id)
-            except Exception:
-                pass
-        self.show_success_popup()
-
-    def handle_fail(self):
-        if self.game_over:
-            return
-        self.game_over = True
-        self.success_shown = False
-        self.play_sound("fail")
-        if self.timer_id is not None:
-            try:
-                self.root.after_cancel(self.timer_id)
-            except Exception:
-                pass
-        self.show_fail_popup()
-
-    # ---------------------- ПОПАПЫ ---------------------- #
-    def show_success_popup(self):
-        self.canvas.delete(self.layer_tag)
-
-        w = self.canvas.winfo_width()
-        h = self.canvas.winfo_height()
-
-        bw, bh = 600, 260
-        x0 = (w - bw) // 2
-        y0 = (h - bh) // 2
-        x1 = x0 + bw
-        y1 = y0 + bh
-
-        self.canvas.create_rectangle(
-            x0, y0, x1, y1,
-            fill="#020910",
-            outline="#82e4ff",
-            width=3,
-            tags=self.layer_tag
-        )
-
-        self.canvas.create_text(
-            (x0 + x1) / 2, y0 + 35,
-            text="ZERO-DAY VULNERABILITY FOUND",
-            fill="#82e4ff",
-            font=("Consolas", 18, "bold"),
-            tags=self.layer_tag
-        )
-
-        explanation = (
-            "Ты запитал обе ветки и открыл ворота, а затем довёл сигнал до выхода.\n\n"
-            "Zero-Day — это уязвимость, о которой производитель ПО ещё не знает.\n"
-            "Пока нет патча и сигнатур, такие дыры позволяют обходить аутентификацию,\n"
-            "повышать привилегии и выполнять код на удалённых системах незаметно\n"
-            "для стандартных средств защиты."
-        )
-
-        self.canvas.create_text(
-            (x0 + x1) / 2, (y0 + y1) / 2,
-            text=explanation,
-            fill="#d0f6ff",
-            font=("Consolas", 11),
-            justify="center",
-            tags=self.layer_tag
-        )
-
-        self.canvas.create_text(
-            (x0 + x1) / 2, y1 - 35,
-            text="Нажми ESC, чтобы вернуться в центральное меню CtOS.",
-            fill="#82e4ff",
-            font=("Consolas", 11),
-            tags=self.layer_tag
-        )
-
-    def show_fail_popup(self):
-        self.canvas.delete(self.layer_tag)
-
-        w = self.canvas.winfo_width()
-        h = self.canvas.winfo_height()
-
-        bw, bh = 450, 180
-        x0 = (w - bw) // 2
-        y0 = (h - bh) // 2
-        x1 = x0 + bw
-        y1 = y0 + bh
-
-        self.canvas.create_rectangle(
-            x0, y0, x1, y1,
-            fill="#120207",
-            outline="#ff4444",
-            width=3,
-            tags=self.layer_tag
-        )
-
-        self.canvas.create_text(
-            (x0 + x1) / 2, y0 + 35,
-            text="FIREWALL LOCKED",
-            fill="#ff5555",
-            font=("Consolas", 18, "bold"),
-            tags=self.layer_tag
-        )
-
-        self.canvas.create_text(
-            (x0 + x1) / 2, (y0 + y1) / 2,
-            text="Временное окно для эксплуатации уязвимости закрылось.\n"
-                 "Перезапусти Zero-Day и попробуй ещё раз.",
-            fill="#ffcccc",
-            font=("Consolas", 11),
-            justify="center",
-            tags=self.layer_tag
-        )
-
-        self.canvas.create_text(
-            (x0 + x1) / 2, y1 - 35,
-            text="Нажми ESC, чтобы выйти в меню CtOS.",
-            fill="#ff8888",
-            font=("Consolas", 11),
-            tags=self.layer_tag
-        )
-
-    # ---------------------- ОЧИСТКА ---------------------- #
     def cleanup(self):
-        if self.timer_id is not None:
-            try:
-                self.root.after_cancel(self.timer_id)
-            except Exception:
-                pass
-            self.timer_id = None
-
+        self.running = False
         self.canvas.unbind("<Button-1>")
         self.root.unbind("<Escape>")
         self.canvas.delete(self.layer_tag)
+# ------------------------- ЛОКАЛЬНЫЙ ТЕСТ ------------------------- #
+if __name__ == "__main__":
+    root = tk.Tk()
+    root.title("Zero-Day WD Template")
+    root.geometry("1280x720")
+    canvas = tk.Canvas(root, bg="black", width=1280, height=720)
+    canvas.pack(fill="both", expand=True)
+    def back():
+        root.destroy()
+    game = ZeroDownModule(canvas, root, back)
+    root.mainloop()
