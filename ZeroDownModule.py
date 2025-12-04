@@ -1,6 +1,9 @@
+import os
 import tkinter as tk
 import math
 import time
+import random
+import pygame
 # ---------- Типы узлов ---------- #
 TYPE_NORMAL = "normal"
 TYPE_LINE = "line"
@@ -65,12 +68,15 @@ class WDNode:
         return {(p + self.rotation) % 4 for p in self.base_ports}
 class ZeroDownModule:
     """
-    Шаблон мини-игры Zero-Day в стиле Watch Dogs.
-    ✔ Полноценная портовая логика.
-    ✔ Плавный поворот узлов (Rotation: A).
-    ✔ Бегущий луч по активным линиям (Beam: 1).
-    ✔ Вращающийся светящийся пунктир при питании.
-    ✔ Таймер уровня с миллисекундами и окно с описанием Zero-Day.
+    Полностью улучшенный модуль Zero-Day с:
+    ✔ корректной логикой питания
+    ✔ плавными поворотами узлов (Rotation: A)
+    ✔ неоновыми эффектами WD
+    ✔ бегущим лучом по активным линиям (Beam: 1)
+    ✔ вращающимся пунктиром при питании
+    ✔ DataExfil-style панелью завершения
+    ✔ анимированным фоном (неоновая сетка + частицы)
+    ✔ адаптацией под fullscreen
     """
     def __init__(self, canvas: tk.Canvas, root: tk.Tk, on_exit):
         self.canvas = canvas
@@ -85,7 +91,7 @@ class ZeroDownModule:
         # визуальная сетка
         self.spacing = 160
         self.layer_tag = "wd_layer"
-        self.ui_exit_bbox = None
+        self.ui_exit_bbox: tuple[int, int, int, int] | None = None
         # анимация
         self.ticks = 0
         self.spin_offset = 0.0
@@ -95,6 +101,18 @@ class ZeroDownModule:
         self.timer_running = True
         self.elapsed_final = 0.0
         self.level_completed = False
+        self.success_shown = False
+        # фоновые частицы (x, y, dx, dy, r)
+        self.bg_particles = [
+            {
+                "x": random.random(),
+                "y": random.random(),
+                "dx": (random.random() - 0.5) * 0.0015,
+                "dy": (random.random() - 0.5) * 0.0015,
+                "r": random.uniform(1.5, 3.5),
+            }
+            for _ in range(80)
+        ]
         # демо-уровень
         self.build_demo()
         # логика + отрисовка
@@ -103,6 +121,15 @@ class ZeroDownModule:
         # управление
         self.canvas.bind("<Button-1>", self.on_click)
         root.bind("<Escape>", self._on_escape)
+        # SOUND SYSTEM
+        pygame.mixer.init()
+        self.sounds = {}
+        base = os.path.join(os.path.dirname(__file__), "sound")
+        self.sounds["pulse"] = pygame.mixer.Sound(os.path.join(base, "pulse.mp3"))
+        self.sounds["lock_open"] = pygame.mixer.Sound(os.path.join(base, "lock_open.mp3"))
+        # громкость
+        self.sounds["pulse"].set_volume(0.5)
+        self.sounds["lock_open"].set_volume(0.5)
         # запуск анимации
         self.animate()
     # ================= УТИЛИТЫ ПОСТРОЕНИЯ УРОВНЯ ================= #
@@ -117,20 +144,10 @@ class ZeroDownModule:
         node_id: str,
         col: int,
         row: int,
-        ntype: str = TYPE_NORMAL,
+        ntype: str,
         rotation: int = 0,
-        gate_required: int | None = None,
+        gate_required: int = 2,
     ):
-        """
-        Добавить узел.
-        col, row — позиция в условной сетке (целые).
-        rotation — поворот 0..3 (на 90°) для логики портов.
-        ntype — один из:
-            TYPE_LINE, TYPE_CORNER, TYPE_CROSS, TYPE_GATE, TYPE_START, TYPE_EXIT.
-        gate_required — для GATE: минимальное число разных направлений входа.
-        """
-        if gate_required is None:
-            gate_required = 2
         node = WDNode(node_id, col, row, ntype, rotation, gate_required)
         self.nodes[node_id] = node
         self.adj.setdefault(node_id, [])
@@ -142,8 +159,8 @@ class ZeroDownModule:
         if a_id not in self.nodes or b_id not in self.nodes:
             return
         self.edges.append((a_id, b_id))
-        self.adj.setdefault(a_id, []).append(b_id)
-        self.adj.setdefault(b_id, []).append(a_id)
+        self.adj[a_id].append(b_id)
+        self.adj[b_id].append(a_id)
     def build_demo(self):
         """
         ДЕМО-шаблон:
@@ -183,29 +200,24 @@ class ZeroDownModule:
     # =================== ГЕОМЕТРИЯ И НАПРАВЛЕНИЯ =================== #
     def compute_layout(self, w: int, h: int):
         """
-        Авто-центрирование сетки по окну.
-        Вычисляем origin_x / origin_y динамически каждый кадр.
+        Авто-центрирование сетки по размерам окна.
         """
-        margin = 70
         if not self.nodes:
             self.origin_x = w // 2
             self.origin_y = h // 2
-            self.panel_margin = margin
+            self.margin = 70
             return
         cols = [n.col for n in self.nodes.values()]
         rows = [n.row for n in self.nodes.values()]
         min_c, max_c = min(cols), max(cols)
         min_r, max_r = min(rows), max(rows)
-        # центр панели (между margin и w-margin)
         cx = w // 2
         cy = h // 2
-        # центр "сеточных координат" в пикселях:
-        # хотим, чтобы среднее (min+max)/2 попадало в cx,cy
         grid_cx = (min_c + max_c) / 2.0
         grid_cy = (min_r + max_r) / 2.0
         self.origin_x = cx - grid_cx * self.spacing
         self.origin_y = cy - grid_cy * self.spacing
-        self.panel_margin = margin
+        self.margin = 70
     def node_xy(self, node: WDNode) -> tuple[int, int]:
         x = self.origin_x + node.col * self.spacing
         y = self.origin_y + node.row * self.spacing
@@ -272,7 +284,8 @@ class ZeroDownModule:
                             self.level_completed = True
                             self.timer_running = False
                             self.elapsed_final = time.perf_counter() - self.timer_start
-                            # через 3 секунды показываем окно
+                            self.sounds["lock_open"].play()
+                            # через 3 сек показываем плашку
                             self.root.after(3000, self.show_completion_window)
                 else:
                     if not nb.powered:
@@ -284,6 +297,10 @@ class ZeroDownModule:
             return
         self.ticks += 1
         self.spin_offset = (self.spin_offset + 1.5) % 9999  # вращение пунктира
+        # двигаем фоновые частицы
+        for p in self.bg_particles:
+            p["x"] = (p["x"] + p["dx"]) % 1.0
+            p["y"] = (p["y"] + p["dy"]) % 1.0
         any_finished = False
         # обновляем анимацию поворота узлов
         for node in self.nodes.values():
@@ -308,23 +325,17 @@ class ZeroDownModule:
     # ========================= ОТРИСОВКА ========================= #
     def redraw(self):
         self.canvas.delete(self.layer_tag)
-        # реальные размеры canvas (важно для фуллскрина)
+        # реальные размеры canvas
         w = self.canvas.winfo_width()
         h = self.canvas.winfo_height()
         if w <= 1:
             w = int(self.canvas["width"])
         if h <= 1:
             h = int(self.canvas["height"])
-        # пересчёт раскладки
         self.compute_layout(w, h)
-        margin = self.panel_margin
+        margin = self.margin
         # фон
-        self.canvas.create_rectangle(
-            0, 0, w, h,
-            fill="black",
-            outline="",
-            tags=self.layer_tag,
-        )
+        self.draw_background(w, h)
         # рамка
         self.canvas.create_rectangle(
             margin, margin,
@@ -336,7 +347,7 @@ class ZeroDownModule:
         # заголовок
         self.canvas.create_text(
             w // 2, margin - 25,
-            text="CtOS  //  ZERO-DAY NODE GRID (TEMPLATE)",
+            text="CtOS  //  ZERO-DAY NODE GRID",
             fill="#7de4ff",
             font=("Consolas", 16, "bold"),
             tags=self.layer_tag,
@@ -387,6 +398,47 @@ class ZeroDownModule:
             font=("Consolas", 16, "bold"),
             tags=self.layer_tag,
         )
+    # ---------------- Фон ---------------- #
+    def draw_background(self, w: int, h: int):
+        # Тёмный фон
+        self.canvas.create_rectangle(
+            0, 0, w, h,
+            fill="black",
+            outline="",
+            tags=self.layer_tag,
+        )
+        # Неоновая сетка
+        cell = 80
+        offset = int((self.ticks * 0.5) % cell)
+        for x in range(-cell, w + cell, cell):
+            self.canvas.create_line(
+                x + offset, 0, x + offset, h,
+                fill="#08222f",
+                width=1,
+                tags=self.layer_tag,
+            )
+        for y in range(-cell, h + cell, cell):
+            self.canvas.create_line(
+                0, y + offset, w, y + offset,
+                fill="#08222f",
+                width=1,
+                tags=self.layer_tag,
+            )
+        # Неоновые частицы
+        for p in self.bg_particles:
+            px = int(p["x"] * w)
+            py = int(p["y"] * h)
+            r = p["r"]
+            # лёгкая пульсация яркости
+            pulse = 0.5 + 0.5 * math.sin(self.ticks / 15.0 + px * 0.01)
+            c = int(80 + 80 * pulse)
+            color = f"#{0:02x}{c:02x}{255:02x}"
+            self.canvas.create_oval(
+                px - r, py - r, px + r, py + r,
+                fill=color,
+                outline="",
+                tags=self.layer_tag,
+            )
     def draw_edge(self, a: WDNode, b: WDNode):
         x1, y1 = self.node_xy(a)
         x2, y2 = self.node_xy(b)
@@ -401,7 +453,7 @@ class ZeroDownModule:
             capstyle="round",
             tags=self.layer_tag,
         )
-        # бегущий луч по активной линии (Beam: 1)
+        # бегущий луч по активной линии
         if active:
             base_t = (self.ticks * 0.03) % 1.0
             for phase in (0.0, 0.5):
@@ -429,25 +481,23 @@ class ZeroDownModule:
     def draw_circle_node(self, node: WDNode, x: int, y: int):
         outer_r = 22
         inner_r = 15
-        # ------ ВНЕШНИЙ ПУНКТИР С АНИМАЦИЕЙ ------
+        # Внешний пунктир (вращающийся при питании)
         if node.powered:
-            outline = "#88caff"      # светлый голубой
-            dash = (3, 3)
-            dash_offset = self.spin_offset  # вращение!
+            outline = "#88caff"
+            dash_offset = self.spin_offset
         else:
             outline = "#233746"
-            dash = (3, 3)
             dash_offset = 0
         self.canvas.create_oval(
             x - outer_r, y - outer_r,
             x + outer_r, y + outer_r,
             outline=outline,
             width=2,
-            dash=dash,
+            dash=(3, 3),
             dashoffset=dash_offset,
             tags=self.layer_tag,
         )
-        # ------ ВНУТРЕННИЙ ЧЁРНЫЙ КРУГ ------
+        # Внутренний чёрный круг
         self.canvas.create_oval(
             x - inner_r, y - inner_r,
             x + inner_r, y + inner_r,
@@ -464,7 +514,7 @@ class ZeroDownModule:
             self.draw_corner_template(node, x, y, shape_color)
         elif node.type == TYPE_CROSS:
             self.draw_cross_template(node, x, y, shape_color)
-        # стрелка-направление: (0, -L) вращаем на visual_angle
+        # стрелка-направление
         dir_color = "#6fd6ff" if node.powered else "#ffffff"
         self.draw_direction_marker(node, x, y, dir_color)
     @staticmethod
@@ -481,7 +531,7 @@ class ZeroDownModule:
             width=3,
             tags=self.layer_tag,
         )
-    # --------- внутренний шаблон для LINE --------- #
+    # --------- LINE --------- #
     def draw_line_template(self, node: WDNode, x: int, y: int, color: str):
         L = 13
         dx1, dy1 = self._rot(0, -L, node.visual_angle)
@@ -492,10 +542,10 @@ class ZeroDownModule:
             width=2,
             tags=self.layer_tag,
         )
-    # --------- внутренний шаблон для CORNER --------- #
+    # --------- CORNER --------- #
     def draw_corner_template(self, node: WDNode, x: int, y: int, color: str):
         L = 11
-        # база (rotation=0): угол UP+RIGHT => (0,-L) и (L,0)
+        # база: угол UP+RIGHT => (0,-L) и (L,0)
         dx1, dy1 = self._rot(0, -L, node.visual_angle)
         dx2, dy2 = self._rot(L, 0, node.visual_angle)
         self.canvas.create_line(
@@ -510,7 +560,7 @@ class ZeroDownModule:
             width=2,
             tags=self.layer_tag,
         )
-    # --------- внутренний шаблон для CROSS --------- #
+    # --------- CROSS --------- #
     def draw_cross_template(self, node: WDNode, x: int, y: int, color: str):
         L = 10
         dx1, dy1 = self._rot(-L, 0, node.visual_angle)
@@ -641,11 +691,12 @@ class ZeroDownModule:
             # пока анимация не закончилась, игнорируем новые клики
             return
         # запускаем плавный поворот на 90°
+        self.sounds["pulse"].play()
         node.animating = True
         node.anim_from_angle = node.visual_angle
         node.anim_to_angle = node.visual_angle + 90.0
         node.anim_step = 0
-        node.anim_steps = 10  # ~10 кадров на поворот (≈0.4 сек)
+        node.anim_steps = 10  # ~10 кадров на поворот
     # ====================== ТАЙМЕР И ОКНО ФИНАЛА ====================== #
     @staticmethod
     def format_time(t: float) -> str:
@@ -654,47 +705,122 @@ class ZeroDownModule:
         minu = int(t // 60)
         return f"{minu:02}:{sec:02}.{ms:03}"
     def show_completion_window(self):
-        win = tk.Toplevel(self.root)
-        win.title("ZERO-DAY BREACH")
-        win.geometry("640x420")
-        win.configure(bg="black")
-        tk.Label(
-            win,
-            text="BREACH SUCCESSFUL",
-            fg="#55caff",
-            bg="black",
-            font=("Consolas", 22, "bold"),
-        ).pack(pady=20)
-        tk.Label(
-            win,
-            text=f"Time: {self.format_time(self.elapsed_final)}",
-            fg="#7de4ff",
-            bg="black",
-            font=("Consolas", 16, "bold"),
-        ).pack(pady=10)
-        text = (
-            "Zero-Day — это уязвимость, о которой ещё никто не знает.\n"
-            "Для неё нет патчей и сигнатур, поэтому атакующий может\n"
-            "использовать её, пока разработчики не обнаружат проблему.\n\n"
-            "В этой мини-игре ты как раз моделируешь подобную атаку:\n"
-            "подбираешь маршрут через сеть узлов, обходишь защитные\n"
-            "«ворота» и направляешь поток данных к целевой точке (EXIT),\n"
-            "имитируя скрытую эксплуатацию zero-day уязвимости."
+        if self.success_shown:
+            return
+        self.success_shown = True
+        # прекращаем дальнейшую анимацию
+        self.anim_loop_running = False
+        w = self.canvas.winfo_width()
+        h = self.canvas.winfo_height()
+        if w <= 1:
+            w = int(self.canvas["width"])
+        if h <= 1:
+            h = int(self.canvas["height"])
+        # затемнение фона
+        self.canvas.create_rectangle(
+            0, 0, w, h,
+            fill="#000000",
+            stipple="gray50",
+            tags=self.layer_tag,
         )
-        tk.Label(
-            win,
-            text=text,
-            fg="white",
-            bg="black",
-            font=("Consolas", 11),
-            justify="left",
-        ).pack(padx=20, pady=20)
+        # размеры панели (как у DataExfil-плашки)
+        box_w = 700
+        box_h = 360
+        x0 = (w - box_w) // 2
+        y0 = (h - box_h) // 2
+        x1 = x0 + box_w
+        y1 = y0 + box_h
+        # панель
+        self.canvas.create_rectangle(
+            x0, y0, x1, y1,
+            outline="#48bfff",
+            width=2,
+            fill="#020b13",
+            tags=self.layer_tag,
+        )
+        # заголовок
+        self.canvas.create_text(
+            (x0 + x1) // 2, y0 + 35,
+            text="ZERO-DAY VULNERABILITY DISCOVERED\n",
+            fill="#48bfff",
+            font=("Consolas", 18, "bold"),
+            tags=self.layer_tag,
+        )
+        # время
+        self.canvas.create_text(
+            (x0 + x1) // 2, y0 + 70,
+            text=f"Time: {self.format_time(self.elapsed_final)}\n",
+            fill="#7de4ff",
+            font=("Consolas", 14, "bold"),
+            tags=self.layer_tag,
+        )
+        # описание
+        description = (
+            "\n"
+            "\n"
+            "\n"
+            "\n"
+            "\nТы успешно направил энергию через узлы сети, открыв защищённые ворота.\n"
+            "\n"
+            "Zero-Day — это уязвимость, о которой ещё никто не знает.\n"
+            "У неё нет патчей, сигнатур и механизмов защиты.\n"
+            "\n"
+            "Эта мини-игра моделирует процесс эксплуатации Zero-Day:\n"
+            " • поиск маршрутов внутри инфраструктуры,\n"
+            " • обход защищённых сегментов сети,\n"
+            " • активацию скрытых узлов,\n"
+            " • получение доступа к целевой точке (EXIT).\n"
+            "\n"
+            "\n"
+        )
+        self.canvas.create_text(
+            (x0 + x1) // 2, y0 + 160,
+            text=description,
+            fill="#cdeaff",
+            font=("Consolas", 12),
+            width=box_w - 80,
+            justify="center",
+            tags=self.layer_tag,
+        )
+        # кнопка CLOSE
+        btn_x0 = (x0 + x1) // 2 - 90
+        btn_x1 = (x0 + x1) // 2 + 90
+        btn_y0 = y1 - 60
+        btn_y1 = y1 - 20
+        btn = self.canvas.create_rectangle(
+            btn_x0, btn_y0, btn_x1, btn_y1,
+            outline="#48bfff",
+            width=2,
+            fill="",
+            tags=self.layer_tag,
+        )
+        btn_label = self.canvas.create_text(
+            (btn_x0 + btn_x1) // 2,
+            (btn_y0 + btn_y1) // 2,
+            text="CLOSE",
+            fill="#48bfff",
+            font=("Consolas", 13, "bold"),
+            tags=self.layer_tag,
+        )
+        def on_enter(event):
+            self.canvas.itemconfig(btn, fill="#0a2a44")
+            self.canvas.itemconfig(btn_label, fill="white")
+        def on_leave(event):
+            self.canvas.itemconfig(btn, fill="")
+            self.canvas.itemconfig(btn_label, fill="#48bfff")
+        def on_click(event):
+            self._on_escape()
+        for tag in (btn, btn_label):
+            self.canvas.tag_bind(tag, "<Enter>", on_enter)
+            self.canvas.tag_bind(tag, "<Leave>", on_leave)
+            self.canvas.tag_bind(tag, "<Button-1>", on_click)
 # ========================= ЛОКАЛЬНЫЙ ТЕСТ ========================= #
 if __name__ == "__main__":
     root = tk.Tk()
     root.geometry("1280x720")
     root.title("Zero-Day WD Ports Template")
-    # root.attributes("-fullscreen", True)  # можешь включить фуллскрин здесь
+    # можно включить фуллскрин:
+    # root.attributes("-fullscreen", True)
     canvas = tk.Canvas(root, bg="black", width=1280, height=720)
     canvas.pack(fill="both", expand=True)
     def back():

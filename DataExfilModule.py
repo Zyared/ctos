@@ -1,7 +1,6 @@
 import tkinter as tk
 import random
 
-
 class DataExfilModule:
     def __init__(self, canvas, root, exit_callback):
         self.canvas = canvas
