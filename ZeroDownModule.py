@@ -11,7 +11,8 @@ TYPE_EXIT = "exit"
 class WDNode:
     """
     Узел графа в стиле Watch Dogs.
-    rotation: 0=0°, 1=90°, 2=180°, 3=270° (вращает порты).
+    rotation: 0=0°, 1=90°, 2=180°, 3=270° (для логики портов).
+    visual_angle: текущий визуальный угол (для плавной анимации).
     gate_required – сколько разных направлений питания нужно воротам, чтобы открыться.
     """
     def __init__(
@@ -28,10 +29,17 @@ class WDNode:
         self.row = row
         self.type = ntype
         self.rotation = rotation % 4
+        self.visual_angle: float = self.rotation * 90.0
         self.powered = False
         self.gate_required = gate_required if ntype == TYPE_GATE else 0
         self.gate_input_dirs: set[int] = set()  # из каких направлений пришло питание
-    # ---- ПОРТЫ ---- #
+        # анимация поворота
+        self.animating = False
+        self.anim_from_angle = 0.0
+        self.anim_to_angle = 0.0
+        self.anim_step = 0
+        self.anim_steps = 0
+    # ---- ПОРТЫ ДЛЯ ЛОГИКИ ---- #
     @property
     def base_ports(self) -> set[int]:
         """
@@ -52,27 +60,14 @@ class WDNode:
         return set()
     @property
     def ports(self) -> set[int]:
-        """Порты с учётом rotation."""
+        """Порты с учётом rotation (для логики питания)."""
         return { (p + self.rotation) % 4 for p in self.base_ports }
 class ZeroDownModule:
     """
     Шаблон мини-игры Zero-Day в стиле Watch Dogs.
-    ✔ Полноценная портовая логика:
-        - LINE: два порта (противоположные), питание проходит между ними в обе стороны;
-        - CORNER: два порта (угловые), питание поворачивает;
-        - CROSS: четыре порта, питание раздаётся во все остальные;
-        - START/GATE/EXIT: четыре порта.
-    ✔ Ворота:
-        - копят направления входов в gate_input_dirs;
-        - открываются, если len(gate_input_dirs) >= gate_required;
-        - после открытия ведут себя как 4-портовый узел и передают питание дальше.
-    ✔ Визуал:
-        - круги с пунктиром, шаблоны line/corner/cross,
-        - если узел не запитан: внутренний шаблон серый,
-        - если запитан: внутренний шаблон синий,
-        - стрелка-направление белая/синяя,
-        - связи серые/синие,
-        - старт/ворота/выход — ромбы.
+    ✔ Полноценная портовая логика.
+    ✔ Плавный поворот узлов (Rotation: A).
+    ✔ Пульсирующий луч по активным линиям (Beam: 1).
     """
     def __init__(self, canvas: tk.Canvas, root: tk.Tk, on_exit):
         self.canvas = canvas
@@ -89,15 +84,21 @@ class ZeroDownModule:
         self.origin_x = 200
         self.origin_y = 250
         self.layer_tag = "wd_layer"
-        # кнопка EXIT (UI)
+        # UI EXIT
         self.ui_exit_bbox = None
-        # демо-уровень (только пример)
+        # анимация
+        self.ticks = 0
+        self.anim_loop_running = True
+        # демо-уровень
         self.build_demo()
         # логика + отрисовка
         self.recalculate_power()
         self.redraw()
+        # управление
         self.canvas.bind("<Button-1>", self.on_click)
         root.bind("<Escape>", self._on_escape)
+        # запуск анимации
+        self.animate()
     # ================= УТИЛИТЫ ПОСТРОЕНИЯ УРОВНЯ ================= #
     def clear_graph(self):
         self.nodes.clear()
@@ -117,11 +118,10 @@ class ZeroDownModule:
         """
         Добавить узел.
         col, row — позиция в условной сетке (не пиксели).
-        rotation — поворот 0..3 (на 90°).
+        rotation — поворот 0..3 (на 90°) для логики портов.
         ntype — один из:
             TYPE_LINE, TYPE_CORNER, TYPE_CROSS, TYPE_GATE, TYPE_START, TYPE_EXIT.
-        gate_required — для GATE: минимальное число разных направлений входа,
-        после которых ворота считаются открытыми.
+        gate_required — для GATE: минимальное число разных направлений входа.
         """
         if gate_required is None:
             gate_required = 2
@@ -142,8 +142,7 @@ class ZeroDownModule:
         """
         ДЕМО-шаблон:
             START – LINE – CORNER – CROSS – GATE – EXIT
-        Ворота здесь gate_required=1, чтобы демка проходилась одной линией
-        и было видно, что они ПЕРЕДАЮТ питание дальше.
+        Ворота здесь gate_required=1, чтобы демка проходилась одной линией.
         В своих уровнях ставь gate_required=2.
         """
         self.clear_graph()
@@ -237,11 +236,36 @@ class ZeroDownModule:
                         queue.append(nb_id)
                 elif nb.type == TYPE_EXIT:
                     nb.powered = True
-                    # дальше не обязательно идти
                 else:
                     if not nb.powered:
                         nb.powered = True
                         queue.append(nb_id)
+    # ========================= АНИМАЦИЯ ========================= #
+    def animate(self):
+        if not self.anim_loop_running:
+            return
+        self.ticks += 1
+        any_finished = False
+        # обновляем анимацию поворота узлов
+        for node in self.nodes.values():
+            if node.animating:
+                node.anim_step += 1
+                if node.anim_step >= node.anim_steps:
+                    node.animating = False
+                    node.rotation = (node.rotation + 1) % 4
+                    node.visual_angle = node.rotation * 90.0
+                    any_finished = True
+                else:
+                    t = node.anim_step / node.anim_steps
+                    node.visual_angle = (
+                        node.anim_from_angle
+                        + (node.anim_to_angle - node.anim_from_angle) * t
+                    )
+        if any_finished:
+            self.recalculate_power()
+        self.redraw()
+        # ~25 FPS
+        self.root.after(40, self.animate)
     # ========================= ОТРИСОВКА ========================= #
     def redraw(self):
         self.canvas.delete(self.layer_tag)
@@ -309,6 +333,7 @@ class ZeroDownModule:
         active = a.powered and b.powered
         color = "#55caff" if active else "#2a3b47"
         width = 4 if active else 2
+        # основная линия
         self.canvas.create_line(
             x1, y1, x2, y2,
             fill=color,
@@ -316,6 +341,21 @@ class ZeroDownModule:
             capstyle="round",
             tags=self.layer_tag,
         )
+        # бегущий луч по активной линии (Beam: 1)
+        if active:
+            # t бежит от 0 до 1
+            base_t = (self.ticks * 0.03) % 1.0
+            for phase in (0.0, 0.5):
+                t = (base_t + phase) % 1.0
+                px = x1 + (x2 - x1) * t
+                py = y1 + (y2 - y1) * t
+                r = 4
+                self.canvas.create_oval(
+                    px - r, py - r, px + r, py + r,
+                    outline="",
+                    fill="#7de4ff",
+                    tags=self.layer_tag,
+                )
     def draw_node(self, node: WDNode):
         x, y = self.node_xy(node)
         if node.type in (TYPE_NORMAL, TYPE_LINE, TYPE_CORNER, TYPE_CROSS):
@@ -349,70 +389,84 @@ class ZeroDownModule:
             tags=self.layer_tag,
         )
         # шаблон (line / corner / cross)
-        # серый, если узел пустой, синий — если запитан
         shape_color = "#55caff" if node.powered else "#233746"
         if node.type == TYPE_LINE:
             self.draw_line_template(node, x, y, shape_color)
         elif node.type == TYPE_CORNER:
             self.draw_corner_template(node, x, y, shape_color)
         elif node.type == TYPE_CROSS:
-            self.draw_cross_template(x, y, shape_color)
-        # стрелка-направление — берём один из портов (минимальный)
-        ports = sorted(node.ports)
-        arrow_dir = ports[0] if ports else 0
+            self.draw_cross_template(node, x, y, shape_color)
+        # стрелка-направление: просто короткий сегмент вверх, повернутый на visual_angle
         dir_color = "#6fd6ff" if node.powered else "#ffffff"
-        self.draw_direction_marker(arrow_dir, x, y, dir_color)
-    def draw_direction_marker(self, d: int, x: int, y: int, color: str):
+        self.draw_direction_marker(node, x, y, dir_color)
+    @staticmethod
+    def _rot(dx: float, dy: float, angle_deg: float) -> tuple[float, float]:
+        a = math.radians(angle_deg)
+        ca, sa = math.cos(a), math.sin(a)
+        return dx * ca - dy * sa, dx * sa + dy * ca
+    def draw_direction_marker(self, node: WDNode, x: int, y: int, color: str):
         L = 11
-        if d == 0:   # UP
-            self.canvas.create_line(x, y, x, y - L, fill=color, width=3, tags=self.layer_tag)
-        elif d == 1: # RIGHT
-            self.canvas.create_line(x, y, x + L, y, fill=color, width=3, tags=self.layer_tag)
-        elif d == 2: # DOWN
-            self.canvas.create_line(x, y, x, y + L, fill=color, width=3, tags=self.layer_tag)
-        elif d == 3: # LEFT
-            self.canvas.create_line(x, y, x - L, y, fill=color, width=3, tags=self.layer_tag)
+        # базовый вектор (0, -L), вращаем на visual_angle
+        dx, dy = self._rot(0, -L, node.visual_angle)
+        self.canvas.create_line(
+            x, y, x + dx, y + dy,
+            fill=color,
+            width=3,
+            tags=self.layer_tag,
+        )
     # --------- внутренний шаблон для LINE --------- #
     def draw_line_template(self, node: WDNode, x: int, y: int, color: str):
         L = 13
-        ports = node.ports
-        # вертикаль: UP + DOWN
-        if ports == {0, 2}:
-            self.canvas.create_line(x, y - L, x, y + L, fill=color, width=2, tags=self.layer_tag)
-        # горизонталь: LEFT + RIGHT
-        elif ports == {1, 3}:
-            self.canvas.create_line(x - L, y, x + L, y, fill=color, width=2, tags=self.layer_tag)
-        else:
-            # fallback (хотя по логике других вариантов быть не должно)
-            self.canvas.create_line(x - L, y, x + L, y, fill=color, width=2, tags=self.layer_tag)
+        # базовая вертикальная линия от (0,-L) до (0,L)
+        dx1, dy1 = self._rot(0, -L, node.visual_angle)
+        dx2, dy2 = self._rot(0, L, node.visual_angle)
+        self.canvas.create_line(
+            x + dx1, y + dy1, x + dx2, y + dy2,
+            fill=color,
+            width=2,
+            tags=self.layer_tag,
+        )
     # --------- внутренний шаблон для CORNER --------- #
     def draw_corner_template(self, node: WDNode, x: int, y: int, color: str):
         L = 11
-        ports = sorted(node.ports)
-        ports_set = set(ports)
-        # возможные комбинации:
-        # {UP, RIGHT}, {RIGHT, DOWN}, {DOWN, LEFT}, {LEFT, UP}
-        if ports_set == {0, 1}:  # UP + RIGHT
-            self.canvas.create_line(x, y, x, y - L, fill=color, width=2, tags=self.layer_tag)
-            self.canvas.create_line(x, y, x + L, y, fill=color, width=2, tags=self.layer_tag)
-        elif ports_set == {1, 2}:  # RIGHT + DOWN
-            self.canvas.create_line(x, y, x + L, y, fill=color, width=2, tags=self.layer_tag)
-            self.canvas.create_line(x, y, x, y + L, fill=color, width=2, tags=self.layer_tag)
-        elif ports_set == {2, 3}:  # DOWN + LEFT
-            self.canvas.create_line(x, y, x, y + L, fill=color, width=2, tags=self.layer_tag)
-            self.canvas.create_line(x, y, x - L, y, fill=color, width=2, tags=self.layer_tag)
-        elif ports_set == {0, 3}:  # UP + LEFT
-            self.canvas.create_line(x, y, x, y - L, fill=color, width=2, tags=self.layer_tag)
-            self.canvas.create_line(x, y, x - L, y, fill=color, width=2, tags=self.layer_tag)
-        else:
-            # на всякий случай нарисуем маленький угол вправо-вниз
-            self.canvas.create_line(x, y, x + L, y, fill=color, width=2, tags=self.layer_tag)
-            self.canvas.create_line(x, y, x, y + L, fill=color, width=2, tags=self.layer_tag)
+        # база (rotation=0): угол UP+RIGHT => сегменты (0,-L) и (L,0) от центра
+        # просто вращаем оба сегмента на visual_angle
+        dx1, dy1 = self._rot(0, -L, node.visual_angle)
+        dx2, dy2 = self._rot(L, 0, node.visual_angle)
+        self.canvas.create_line(
+            x, y, x + dx1, y + dy1,
+            fill=color,
+            width=2,
+            tags=self.layer_tag,
+        )
+        self.canvas.create_line(
+            x, y, x + dx2, y + dy2,
+            fill=color,
+            width=2,
+            tags=self.layer_tag,
+        )
     # --------- внутренний шаблон для CROSS --------- #
-    def draw_cross_template(self, x: int, y: int, color: str):
+    def draw_cross_template(self, node: WDNode, x: int, y: int, color: str):
         L = 10
-        self.canvas.create_line(x - L, y, x + L, y, fill=color, width=2, tags=self.layer_tag)
-        self.canvas.create_line(x, y - L, x, y + L, fill=color, width=2, tags=self.layer_tag)
+        # базовый крест: горизонталь (±L, 0), вертикаль (0, ±L)
+        # весь крест вращаем на visual_angle (на практике для крестов разницы почти не видно,
+        # но так всё честно)
+        dx1, dy1 = self._rot(-L, 0, node.visual_angle)
+        dx2, dy2 = self._rot(L, 0, node.visual_angle)
+        dx3, dy3 = self._rot(0, -L, node.visual_angle)
+        dx4, dy4 = self._rot(0, L, node.visual_angle)
+        self.canvas.create_line(
+            x + dx1, y + dy1, x + dx2, y + dy2,
+            fill=color,
+            width=2,
+            tags=self.layer_tag,
+        )
+        self.canvas.create_line(
+            x + dx3, y + dy3, x + dx4, y + dy4,
+            fill=color,
+            width=2,
+            tags=self.layer_tag,
+        )
     # ---------------- GATE ---------------- #
     def draw_gate_node(self, node: WDNode, x: int, y: int):
         size = 26
@@ -467,7 +521,10 @@ class ZeroDownModule:
     def draw_exit_node(self, node: WDNode, x: int, y: int):
         size = 26
         if node.powered:
-            outline = "#00ff66"
+            # лёгкая пульсация по ticks
+            pulse = 0.4 + 0.6 * abs(math.sin(self.ticks / 10.0))
+            g = int(255 * pulse)
+            outline = f"#{0:02x}{g:02x}{80:02x}"
         else:
             outline = "#ffffff"
         self.canvas.create_polygon(
@@ -489,6 +546,7 @@ class ZeroDownModule:
         )
     # ====================== ВЗАИМОДЕЙСТВИЕ ====================== #
     def _on_escape(self, event=None):
+        self.anim_loop_running = False
         self.canvas.unbind("<Button-1>")
         self.root.unbind("<Escape>")
         self.canvas.delete(self.layer_tag)
@@ -518,9 +576,15 @@ class ZeroDownModule:
         # вращаем только круговые узлы (line/corner/cross)
         if node.type not in (TYPE_NORMAL, TYPE_LINE, TYPE_CORNER, TYPE_CROSS):
             return
-        node.rotation = (node.rotation + 1) % 4
-        self.recalculate_power()
-        self.redraw()
+        if node.animating:
+            # пока анимация не закончилась, игнорируем новые клики по этому узлу
+            return
+        # запускаем плавный поворот на 90°
+        node.animating = True
+        node.anim_from_angle = node.visual_angle
+        node.anim_to_angle = node.visual_angle + 90.0
+        node.anim_step = 0
+        node.anim_steps = 10  # ~10 кадров на поворот (≈0.4 сек)
 # ========================= ЛОКАЛЬНЫЙ ТЕСТ ========================= #
 if __name__ == "__main__":
     root = tk.Tk()
