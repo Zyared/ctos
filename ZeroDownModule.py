@@ -68,8 +68,10 @@ class ZeroDownModule:
         - после открытия ведут себя как 4-портовый узел и передают питание дальше.
     ✔ Визуал:
         - круги с пунктиром, шаблоны line/corner/cross,
-        - белая палочка-направление (один из портов), синим, если узел активен,
-        - линии-связи серые, активные — синие,
+        - если узел не запитан: внутренний шаблон серый,
+        - если запитан: внутренний шаблон синий,
+        - стрелка-направление белая/синяя,
+        - связи серые/синие,
         - старт/ворота/выход — ромбы.
     """
     def __init__(self, canvas: tk.Canvas, root: tk.Tk, on_exit):
@@ -145,7 +147,7 @@ class ZeroDownModule:
         В своих уровнях ставь gate_required=2.
         """
         self.clear_graph()
-
+        r = 2
         self.add_node("start", 0, 2, TYPE_START)
         self.add_node("line", 1, 2, TYPE_LINE, rotation=1)        # горизонтальная линия
         self.add_node("corner", 2, 2, TYPE_CORNER, rotation=1)    # угол
@@ -173,8 +175,6 @@ class ZeroDownModule:
         self.add_edge("corner5",  "gate")
         self.add_edge("corner6",  "gate")
         self.add_edge("gate", "exit")
-
-
     # =================== ГЕОМЕТРИЯ И НАПРАВЛЕНИЯ =================== #
     def node_xy(self, node: WDNode) -> tuple[int, int]:
         x = self.origin_x + node.col * self.spacing
@@ -237,7 +237,7 @@ class ZeroDownModule:
                         queue.append(nb_id)
                 elif nb.type == TYPE_EXIT:
                     nb.powered = True
-                    # можно не добавлять в очередь: дальше уже не важно
+                    # дальше не обязательно идти
                 else:
                     if not nb.powered:
                         nb.powered = True
@@ -303,7 +303,6 @@ class ZeroDownModule:
         # узлы
         for node in self.nodes.values():
             self.draw_node(node)
-
     def draw_edge(self, a: WDNode, b: WDNode):
         x1, y1 = self.node_xy(a)
         x2, y2 = self.node_xy(b)
@@ -327,7 +326,6 @@ class ZeroDownModule:
             self.draw_start_node(node, x, y)
         elif node.type == TYPE_EXIT:
             self.draw_exit_node(node, x, y)
-
     # ------------------- КРУГОВЫЕ УЗЛЫ ------------------- #
     def draw_circle_node(self, node: WDNode, x: int, y: int):
         outer_r = 22
@@ -351,15 +349,15 @@ class ZeroDownModule:
             tags=self.layer_tag,
         )
         # шаблон (line / corner / cross)
-        shape_color = "#3b9dd9"
-        d = node.rotation  # ориентация
+        # серый, если узел пустой, синий — если запитан
+        shape_color = "#55caff" if node.powered else "#233746"
         if node.type == TYPE_LINE:
-            self.draw_line_template(d, x, y, shape_color)
+            self.draw_line_template(node, x, y, shape_color)
         elif node.type == TYPE_CORNER:
-            self.draw_corner_template(d, x, y, shape_color)
+            self.draw_corner_template(node, x, y, shape_color)
         elif node.type == TYPE_CROSS:
             self.draw_cross_template(x, y, shape_color)
-        # палочка-направление — берём один из портов (минимальный)
+        # стрелка-направление — берём один из портов (минимальный)
         ports = sorted(node.ports)
         arrow_dir = ports[0] if ports else 0
         dir_color = "#6fd6ff" if node.powered else "#ffffff"
@@ -375,30 +373,41 @@ class ZeroDownModule:
         elif d == 3: # LEFT
             self.canvas.create_line(x, y, x - L, y, fill=color, width=3, tags=self.layer_tag)
     # --------- внутренний шаблон для LINE --------- #
-    def draw_line_template(self, d: int, x: int, y: int, color: str):
+    def draw_line_template(self, node: WDNode, x: int, y: int, color: str):
         L = 13
-        if d in (0, 2):
-            # вертикаль
+        ports = node.ports
+        # вертикаль: UP + DOWN
+        if ports == {0, 2}:
             self.canvas.create_line(x, y - L, x, y + L, fill=color, width=2, tags=self.layer_tag)
+        # горизонталь: LEFT + RIGHT
+        elif ports == {1, 3}:
+            self.canvas.create_line(x - L, y, x + L, y, fill=color, width=2, tags=self.layer_tag)
         else:
-            # горизонталь
+            # fallback (хотя по логике других вариантов быть не должно)
             self.canvas.create_line(x - L, y, x + L, y, fill=color, width=2, tags=self.layer_tag)
     # --------- внутренний шаблон для CORNER --------- #
-    def draw_corner_template(self, d: int, x: int, y: int, color: str):
+    def draw_corner_template(self, node: WDNode, x: int, y: int, color: str):
         L = 11
-        # d задаёт ориентацию угла
-        if d == 0:  # угол вниз+вправо
-            self.canvas.create_line(x, y, x, y + L, fill=color, width=2, tags=self.layer_tag)
-            self.canvas.create_line(x, y, x + L, y, fill=color, width=2, tags=self.layer_tag)
-        elif d == 1:  # вверх+вправо
+        ports = sorted(node.ports)
+        ports_set = set(ports)
+        # возможные комбинации:
+        # {UP, RIGHT}, {RIGHT, DOWN}, {DOWN, LEFT}, {LEFT, UP}
+        if ports_set == {0, 1}:  # UP + RIGHT
             self.canvas.create_line(x, y, x, y - L, fill=color, width=2, tags=self.layer_tag)
             self.canvas.create_line(x, y, x + L, y, fill=color, width=2, tags=self.layer_tag)
-        elif d == 2:  # вверх+влево
-            self.canvas.create_line(x, y, x, y - L, fill=color, width=2, tags=self.layer_tag)
-            self.canvas.create_line(x, y, x - L, y, fill=color, width=2, tags=self.layer_tag)
-        elif d == 3:  # вниз+влево
+        elif ports_set == {1, 2}:  # RIGHT + DOWN
+            self.canvas.create_line(x, y, x + L, y, fill=color, width=2, tags=self.layer_tag)
+            self.canvas.create_line(x, y, x, y + L, fill=color, width=2, tags=self.layer_tag)
+        elif ports_set == {2, 3}:  # DOWN + LEFT
             self.canvas.create_line(x, y, x, y + L, fill=color, width=2, tags=self.layer_tag)
             self.canvas.create_line(x, y, x - L, y, fill=color, width=2, tags=self.layer_tag)
+        elif ports_set == {0, 3}:  # UP + LEFT
+            self.canvas.create_line(x, y, x, y - L, fill=color, width=2, tags=self.layer_tag)
+            self.canvas.create_line(x, y, x - L, y, fill=color, width=2, tags=self.layer_tag)
+        else:
+            # на всякий случай нарисуем маленький угол вправо-вниз
+            self.canvas.create_line(x, y, x + L, y, fill=color, width=2, tags=self.layer_tag)
+            self.canvas.create_line(x, y, x, y + L, fill=color, width=2, tags=self.layer_tag)
     # --------- внутренний шаблон для CROSS --------- #
     def draw_cross_template(self, x: int, y: int, color: str):
         L = 10
