@@ -70,6 +70,7 @@ class ZeroDownModule:
     ✔ Пульсирующий луч по активным линиям (Beam: 1).
     """
     def __init__(self, canvas: tk.Canvas, root: tk.Tk, on_exit):
+        self.spin_offset = 0.0
         self.canvas = canvas
         self.root = root
         self.on_exit = on_exit
@@ -263,6 +264,7 @@ class ZeroDownModule:
                     )
         if any_finished:
             self.recalculate_power()
+        self.spin_offset = (self.spin_offset +3.5)
         self.redraw()
         # ~25 FPS
         self.root.after(40, self.animate)
@@ -370,16 +372,26 @@ class ZeroDownModule:
     def draw_circle_node(self, node: WDNode, x: int, y: int):
         outer_r = 22
         inner_r = 15
-        # внешний пунктир
+        # ------ ВНЕШНИЙ ПУНКТИР С АНИМАЦИЕЙ ------
+        if node.powered:
+            outline = "#ffffff"  # светлый голубой
+            dash = (3, 3)
+            dash_offset = self.spin_offset  # вращение!
+        else:
+            outline = "#233746"
+            dash = (3, 3)
+            dash_offset = 0
+        # вращающийся пунктир
         self.canvas.create_oval(
             x - outer_r, y - outer_r,
             x + outer_r, y + outer_r,
-            outline="#233746",
+            outline=outline,
             width=2,
-            dash=(3, 3),
+            dash=dash,
+            dashoffset=dash_offset,
             tags=self.layer_tag,
         )
-        # внутренний чёрный круг
+        # ------ ВНУТРЕННИЙ ЧЁРНЫЙ КРУГ ------
         self.canvas.create_oval(
             x - inner_r, y - inner_r,
             x + inner_r, y + inner_r,
@@ -388,7 +400,7 @@ class ZeroDownModule:
             width=2,
             tags=self.layer_tag,
         )
-        # шаблон (line / corner / cross)
+        # шаблон узла (линия, угол, крест)
         shape_color = "#55caff" if node.powered else "#233746"
         if node.type == TYPE_LINE:
             self.draw_line_template(node, x, y, shape_color)
@@ -396,9 +408,10 @@ class ZeroDownModule:
             self.draw_corner_template(node, x, y, shape_color)
         elif node.type == TYPE_CROSS:
             self.draw_cross_template(node, x, y, shape_color)
-        # стрелка-направление: просто короткий сегмент вверх, повернутый на visual_angle
+        # белая/голубая стрелка
         dir_color = "#6fd6ff" if node.powered else "#ffffff"
         self.draw_direction_marker(node, x, y, dir_color)
+
     @staticmethod
     def _rot(dx: float, dy: float, angle_deg: float) -> tuple[float, float]:
         a = math.radians(angle_deg)
