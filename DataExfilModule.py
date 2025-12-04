@@ -434,6 +434,7 @@ class DataExfilModule:
 
     def start_info_tour(self):
         self.info_visible = True
+        self.toggle_exfil()
         self.info_page = 0
         self.show_info_step()
 
