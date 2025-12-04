@@ -1,5 +1,6 @@
 import tkinter as tk
 import math
+import time
 # ---------- Типы узлов ---------- #
 TYPE_NORMAL = "normal"
 TYPE_LINE = "line"
@@ -28,8 +29,8 @@ class WDNode:
         self.col = col
         self.row = row
         self.type = ntype
-        self.rotation = rotation % 4
-        self.visual_angle: float = self.rotation * 90.0
+        self.rotation = rotation % 4          # логический поворот
+        self.visual_angle: float = self.rotation * 90.0  # визуальный угол
         self.powered = False
         self.gate_required = gate_required if ntype == TYPE_GATE else 0
         self.gate_input_dirs: set[int] = set()  # из каких направлений пришло питание
@@ -61,16 +62,17 @@ class WDNode:
     @property
     def ports(self) -> set[int]:
         """Порты с учётом rotation (для логики питания)."""
-        return { (p + self.rotation) % 4 for p in self.base_ports }
+        return {(p + self.rotation) % 4 for p in self.base_ports}
 class ZeroDownModule:
     """
     Шаблон мини-игры Zero-Day в стиле Watch Dogs.
     ✔ Полноценная портовая логика.
     ✔ Плавный поворот узлов (Rotation: A).
-    ✔ Пульсирующий луч по активным линиям (Beam: 1).
+    ✔ Бегущий луч по активным линиям (Beam: 1).
+    ✔ Вращающийся светящийся пунктир при питании.
+    ✔ Таймер уровня с миллисекундами и окно с описанием Zero-Day.
     """
     def __init__(self, canvas: tk.Canvas, root: tk.Tk, on_exit):
-        self.spin_offset = 0.0
         self.canvas = canvas
         self.root = root
         self.on_exit = on_exit
@@ -80,16 +82,19 @@ class ZeroDownModule:
         self.adj: dict[str, list[str]] = {}
         self.start_id: str | None = None
         self.exit_id: str | None = None
-        # визуал
+        # визуальная сетка
         self.spacing = 160
-        self.origin_x = 200
-        self.origin_y = 250
         self.layer_tag = "wd_layer"
-        # UI EXIT
         self.ui_exit_bbox = None
         # анимация
         self.ticks = 0
+        self.spin_offset = 0.0
         self.anim_loop_running = True
+        # таймер
+        self.timer_start = time.perf_counter()
+        self.timer_running = True
+        self.elapsed_final = 0.0
+        self.level_completed = False
         # демо-уровень
         self.build_demo()
         # логика + отрисовка
@@ -118,7 +123,7 @@ class ZeroDownModule:
     ):
         """
         Добавить узел.
-        col, row — позиция в условной сетке (не пиксели).
+        col, row — позиция в условной сетке (целые).
         rotation — поворот 0..3 (на 90°) для логики портов.
         ntype — один из:
             TYPE_LINE, TYPE_CORNER, TYPE_CROSS, TYPE_GATE, TYPE_START, TYPE_EXIT.
@@ -143,7 +148,7 @@ class ZeroDownModule:
         """
         ДЕМО-шаблон:
             START – LINE – CORNER – CROSS – GATE – EXIT
-        Ворота здесь gate_required=1, чтобы демка проходилась одной линией.
+        Ворота здесь gate_required=1, чтобы демо проходилась одной линией.
         В своих уровнях ставь gate_required=2.
         """
         self.clear_graph()
@@ -176,10 +181,35 @@ class ZeroDownModule:
         self.add_edge("corner6",  "gate")
         self.add_edge("gate", "exit")
     # =================== ГЕОМЕТРИЯ И НАПРАВЛЕНИЯ =================== #
+    def compute_layout(self, w: int, h: int):
+        """
+        Авто-центрирование сетки по окну.
+        Вычисляем origin_x / origin_y динамически каждый кадр.
+        """
+        margin = 70
+        if not self.nodes:
+            self.origin_x = w // 2
+            self.origin_y = h // 2
+            self.panel_margin = margin
+            return
+        cols = [n.col for n in self.nodes.values()]
+        rows = [n.row for n in self.nodes.values()]
+        min_c, max_c = min(cols), max(cols)
+        min_r, max_r = min(rows), max(rows)
+        # центр панели (между margin и w-margin)
+        cx = w // 2
+        cy = h // 2
+        # центр "сеточных координат" в пикселях:
+        # хотим, чтобы среднее (min+max)/2 попадало в cx,cy
+        grid_cx = (min_c + max_c) / 2.0
+        grid_cy = (min_r + max_r) / 2.0
+        self.origin_x = cx - grid_cx * self.spacing
+        self.origin_y = cy - grid_cy * self.spacing
+        self.panel_margin = margin
     def node_xy(self, node: WDNode) -> tuple[int, int]:
         x = self.origin_x + node.col * self.spacing
         y = self.origin_y + node.row * self.spacing
-        return x, y
+        return int(x), int(y)
     @staticmethod
     def dir_between(a: WDNode, b: WDNode) -> int | None:
         """
@@ -230,13 +260,20 @@ class ZeroDownModule:
                     continue
                 # ---- приём питания узлом nb ---- #
                 if nb.type == TYPE_GATE:
-                    # Запоминаем направление
                     nb.gate_input_dirs.add(d_ba)
-                    if not nb.powered and len(nb.gate_input_dirs) >= max(1, nb.gate_required):
+                    if (not nb.powered) and len(nb.gate_input_dirs) >= max(1, nb.gate_required):
                         nb.powered = True
                         queue.append(nb_id)
                 elif nb.type == TYPE_EXIT:
-                    nb.powered = True
+                    if not nb.powered:
+                        nb.powered = True
+                        # фиксируем прохождение уровня
+                        if not self.level_completed:
+                            self.level_completed = True
+                            self.timer_running = False
+                            self.elapsed_final = time.perf_counter() - self.timer_start
+                            # через 3 секунды показываем окно
+                            self.root.after(3000, self.show_completion_window)
                 else:
                     if not nb.powered:
                         nb.powered = True
@@ -246,6 +283,7 @@ class ZeroDownModule:
         if not self.anim_loop_running:
             return
         self.ticks += 1
+        self.spin_offset = (self.spin_offset + 1.5) % 9999  # вращение пунктира
         any_finished = False
         # обновляем анимацию поворота узлов
         for node in self.nodes.values():
@@ -264,15 +302,22 @@ class ZeroDownModule:
                     )
         if any_finished:
             self.recalculate_power()
-        self.spin_offset = (self.spin_offset +3.5)
         self.redraw()
         # ~25 FPS
         self.root.after(40, self.animate)
     # ========================= ОТРИСОВКА ========================= #
     def redraw(self):
         self.canvas.delete(self.layer_tag)
-        w = int(self.canvas["width"])
-        h = int(self.canvas["height"])
+        # реальные размеры canvas (важно для фуллскрина)
+        w = self.canvas.winfo_width()
+        h = self.canvas.winfo_height()
+        if w <= 1:
+            w = int(self.canvas["width"])
+        if h <= 1:
+            h = int(self.canvas["height"])
+        # пересчёт раскладки
+        self.compute_layout(w, h)
+        margin = self.panel_margin
         # фон
         self.canvas.create_rectangle(
             0, 0, w, h,
@@ -280,7 +325,7 @@ class ZeroDownModule:
             outline="",
             tags=self.layer_tag,
         )
-        margin = 70
+        # рамка
         self.canvas.create_rectangle(
             margin, margin,
             w - margin, h - margin,
@@ -329,6 +374,19 @@ class ZeroDownModule:
         # узлы
         for node in self.nodes.values():
             self.draw_node(node)
+        # таймер
+        if self.timer_running:
+            elapsed = time.perf_counter() - self.timer_start
+        else:
+            elapsed = self.elapsed_final
+        timer_text = self.format_time(elapsed)
+        self.canvas.create_text(
+            w - margin - 80, margin,
+            text=timer_text,
+            fill="#55caff",
+            font=("Consolas", 16, "bold"),
+            tags=self.layer_tag,
+        )
     def draw_edge(self, a: WDNode, b: WDNode):
         x1, y1 = self.node_xy(a)
         x2, y2 = self.node_xy(b)
@@ -345,7 +403,6 @@ class ZeroDownModule:
         )
         # бегущий луч по активной линии (Beam: 1)
         if active:
-            # t бежит от 0 до 1
             base_t = (self.ticks * 0.03) % 1.0
             for phase in (0.0, 0.5):
                 t = (base_t + phase) % 1.0
@@ -374,14 +431,13 @@ class ZeroDownModule:
         inner_r = 15
         # ------ ВНЕШНИЙ ПУНКТИР С АНИМАЦИЕЙ ------
         if node.powered:
-            outline = "#ffffff"  # светлый голубой
+            outline = "#88caff"      # светлый голубой
             dash = (3, 3)
             dash_offset = self.spin_offset  # вращение!
         else:
             outline = "#233746"
             dash = (3, 3)
             dash_offset = 0
-        # вращающийся пунктир
         self.canvas.create_oval(
             x - outer_r, y - outer_r,
             x + outer_r, y + outer_r,
@@ -408,10 +464,9 @@ class ZeroDownModule:
             self.draw_corner_template(node, x, y, shape_color)
         elif node.type == TYPE_CROSS:
             self.draw_cross_template(node, x, y, shape_color)
-        # белая/голубая стрелка
+        # стрелка-направление: (0, -L) вращаем на visual_angle
         dir_color = "#6fd6ff" if node.powered else "#ffffff"
         self.draw_direction_marker(node, x, y, dir_color)
-
     @staticmethod
     def _rot(dx: float, dy: float, angle_deg: float) -> tuple[float, float]:
         a = math.radians(angle_deg)
@@ -419,7 +474,6 @@ class ZeroDownModule:
         return dx * ca - dy * sa, dx * sa + dy * ca
     def draw_direction_marker(self, node: WDNode, x: int, y: int, color: str):
         L = 11
-        # базовый вектор (0, -L), вращаем на visual_angle
         dx, dy = self._rot(0, -L, node.visual_angle)
         self.canvas.create_line(
             x, y, x + dx, y + dy,
@@ -430,7 +484,6 @@ class ZeroDownModule:
     # --------- внутренний шаблон для LINE --------- #
     def draw_line_template(self, node: WDNode, x: int, y: int, color: str):
         L = 13
-        # базовая вертикальная линия от (0,-L) до (0,L)
         dx1, dy1 = self._rot(0, -L, node.visual_angle)
         dx2, dy2 = self._rot(0, L, node.visual_angle)
         self.canvas.create_line(
@@ -442,8 +495,7 @@ class ZeroDownModule:
     # --------- внутренний шаблон для CORNER --------- #
     def draw_corner_template(self, node: WDNode, x: int, y: int, color: str):
         L = 11
-        # база (rotation=0): угол UP+RIGHT => сегменты (0,-L) и (L,0) от центра
-        # просто вращаем оба сегмента на visual_angle
+        # база (rotation=0): угол UP+RIGHT => (0,-L) и (L,0)
         dx1, dy1 = self._rot(0, -L, node.visual_angle)
         dx2, dy2 = self._rot(L, 0, node.visual_angle)
         self.canvas.create_line(
@@ -461,9 +513,6 @@ class ZeroDownModule:
     # --------- внутренний шаблон для CROSS --------- #
     def draw_cross_template(self, node: WDNode, x: int, y: int, color: str):
         L = 10
-        # базовый крест: горизонталь (±L, 0), вертикаль (0, ±L)
-        # весь крест вращаем на visual_angle (на практике для крестов разницы почти не видно,
-        # но так всё честно)
         dx1, dy1 = self._rot(-L, 0, node.visual_angle)
         dx2, dy2 = self._rot(L, 0, node.visual_angle)
         dx3, dy3 = self._rot(0, -L, node.visual_angle)
@@ -534,7 +583,6 @@ class ZeroDownModule:
     def draw_exit_node(self, node: WDNode, x: int, y: int):
         size = 26
         if node.powered:
-            # лёгкая пульсация по ticks
             pulse = 0.4 + 0.6 * abs(math.sin(self.ticks / 10.0))
             g = int(255 * pulse)
             outline = f"#{0:02x}{g:02x}{80:02x}"
@@ -590,7 +638,7 @@ class ZeroDownModule:
         if node.type not in (TYPE_NORMAL, TYPE_LINE, TYPE_CORNER, TYPE_CROSS):
             return
         if node.animating:
-            # пока анимация не закончилась, игнорируем новые клики по этому узлу
+            # пока анимация не закончилась, игнорируем новые клики
             return
         # запускаем плавный поворот на 90°
         node.animating = True
@@ -598,11 +646,55 @@ class ZeroDownModule:
         node.anim_to_angle = node.visual_angle + 90.0
         node.anim_step = 0
         node.anim_steps = 10  # ~10 кадров на поворот (≈0.4 сек)
+    # ====================== ТАЙМЕР И ОКНО ФИНАЛА ====================== #
+    @staticmethod
+    def format_time(t: float) -> str:
+        ms = int((t % 1) * 1000)
+        sec = int(t) % 60
+        minu = int(t // 60)
+        return f"{minu:02}:{sec:02}.{ms:03}"
+    def show_completion_window(self):
+        win = tk.Toplevel(self.root)
+        win.title("ZERO-DAY BREACH")
+        win.geometry("640x420")
+        win.configure(bg="black")
+        tk.Label(
+            win,
+            text="BREACH SUCCESSFUL",
+            fg="#55caff",
+            bg="black",
+            font=("Consolas", 22, "bold"),
+        ).pack(pady=20)
+        tk.Label(
+            win,
+            text=f"Time: {self.format_time(self.elapsed_final)}",
+            fg="#7de4ff",
+            bg="black",
+            font=("Consolas", 16, "bold"),
+        ).pack(pady=10)
+        text = (
+            "Zero-Day — это уязвимость, о которой ещё никто не знает.\n"
+            "Для неё нет патчей и сигнатур, поэтому атакующий может\n"
+            "использовать её, пока разработчики не обнаружат проблему.\n\n"
+            "В этой мини-игре ты как раз моделируешь подобную атаку:\n"
+            "подбираешь маршрут через сеть узлов, обходишь защитные\n"
+            "«ворота» и направляешь поток данных к целевой точке (EXIT),\n"
+            "имитируя скрытую эксплуатацию zero-day уязвимости."
+        )
+        tk.Label(
+            win,
+            text=text,
+            fg="white",
+            bg="black",
+            font=("Consolas", 11),
+            justify="left",
+        ).pack(padx=20, pady=20)
 # ========================= ЛОКАЛЬНЫЙ ТЕСТ ========================= #
 if __name__ == "__main__":
     root = tk.Tk()
     root.geometry("1280x720")
     root.title("Zero-Day WD Ports Template")
+    # root.attributes("-fullscreen", True)  # можешь включить фуллскрин здесь
     canvas = tk.Canvas(root, bg="black", width=1280, height=720)
     canvas.pack(fill="both", expand=True)
     def back():
