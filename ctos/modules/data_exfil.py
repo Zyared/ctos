@@ -1,11 +1,21 @@
 import tkinter as tk
 import random
+import math
+
+from ctos.ui import theme as T
+from ctos.utils.formatting import format_speed_kbps
+from ctos.ui.viewport import Viewport
+from ctos.utils.tk_helpers import draw_corner_frame
+
+# Симуляция: полная шкала прогресс-бара при таком объёме (иначе 100% за пару пакетов)
+PROGRESS_BAR_FULL_MB = 1600
+
 
 class DataExfilModule:
-    def __init__(self, canvas, root, exit_callback):
+    def __init__(self, canvas, root, on_exit):
         self.canvas = canvas
         self.root = root
-        self.exit_callback = exit_callback
+        self.on_exit = on_exit
 
         # MATRIX BACKGROUND
         self.matrix_chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789#@$%&"
@@ -120,30 +130,32 @@ class DataExfilModule:
 
     # ================= BUTTON =================
     def create_button(self, x, y, text, cmd):
-        w = 140
-        h = 40
+        vp = self.vp
+        bw = vp.px(140)
+        bh = vp.px(40)
 
         rect = self.canvas.create_rectangle(
-            x, y, x + w, y + h,
-            outline="#48bfff",
-            width=2
+            x, y, x + bw, y + bh,
+            outline=T.ACCENT,
+            width=vp.wid(2)
         )
 
         label = self.canvas.create_text(
-            x + w // 2,
-            y + h // 2,
+            x + bw // 2,
+            y + bh // 2,
             text=text,
-            fill="#48bfff",
-            font=("Consolas", 12, "bold")
+            fill=T.ACCENT,
+            font=vp.consolas(12, bold=True)
         )
 
         def on_enter(e):
-            self.canvas.itemconfig(rect, fill="#0a2a44")
-            self.canvas.itemconfig(label, fill="white")
+            # ярче обводка + толще рамка + светлее текст — как у узлов графа в главном меню
+            self.canvas.itemconfig(rect, fill=T.BUTTON_HOVER, outline=T.HOVER_OUTLINE, width=vp.wid(3))
+            self.canvas.itemconfig(label, fill=T.TEXT_BRIGHT)
 
         def on_leave(e):
-            self.canvas.itemconfig(rect, fill="")
-            self.canvas.itemconfig(label, fill="#48bfff")
+            self.canvas.itemconfig(rect, fill="", outline=T.ACCENT, width=vp.wid(2))
+            self.canvas.itemconfig(label, fill=T.ACCENT)
 
         for item in (rect, label):
             self.canvas.tag_bind(item, "<Enter>", on_enter)
@@ -161,8 +173,9 @@ class DataExfilModule:
         self.animate_matrix()
 
     def init_matrix_background(self):
-        w = self.canvas.winfo_screenwidth()
-        h = self.canvas.winfo_screenheight()
+        w = self.w
+        h = self.h
+        vp = self.vp
 
         self.matrix_chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789#@$%&"
         self.matrix_objects = []
@@ -170,10 +183,10 @@ class DataExfilModule:
         self.matrix_y = []
         self.matrix_x = []
 
-        font_size = 14
+        font_size = vp.pt(14)
         self.matrix_font = ("Consolas", font_size)
 
-        cols = w // font_size
+        cols = max(1, w // max(1, font_size))
 
         for i in range(cols):
             x = i * font_size
@@ -196,8 +209,11 @@ class DataExfilModule:
     def animate_matrix(self):
         if not self.matrix_active:
             return
+        if self.info_visible:
+            self.root.after(80, self.animate_matrix)
+            return
 
-        h = self.canvas.winfo_screenheight()
+        h = self.h
 
         for i, txt in enumerate(self.matrix_objects):
             self.matrix_y[i] += self.matrix_speed[i]
@@ -215,93 +231,126 @@ class DataExfilModule:
 
     # ================= UI =====================
     def draw_ui(self):
-        w = self.canvas.winfo_screenwidth()
-        h = self.canvas.winfo_screenheight()
+        self.vp = Viewport.from_canvas(self.canvas, self.root)
+        vp = self.vp
+        w = self.w = vp.w
+        h = self.h = vp.h
 
-        self.canvas.create_text(30, 20, anchor="nw",
+        self.canvas.create_text(vp.px(30), vp.px(20), anchor="nw",
                                 text="DATA EXFIL MODULE v2",
-                                fill="#ff4444",
-                                font=("Consolas", 18, "bold"))
+                                fill=T.DANGER,
+                                font=vp.consolas(18, bold=True))
+        # Отсылка: терминальные «хакерские» клиенты (Uplink / Hacknet-стиль HUD)
+        self.canvas.create_text(vp.px(30), vp.px(46), anchor="nw",
+                                text="// SECURE CHANNEL  ·  TRACE: MASKED",
+                                fill=T.SUCCESS,
+                                font=vp.consolas(10))
 
         # LOG PANEL
-        self.canvas.create_rectangle(30, 70, 520, h - 80, outline="#333", width=2)
+        draw_corner_frame(
+            self.canvas, vp.px(30), vp.px(70), vp.px(520), h - vp.px(80),
+            outline=T.PANEL_OUTLINE, frame_width=vp.wid(2),
+            bracket_len=vp.px(16), bracket_width=vp.wid(2),
+        )
         self.log_text = self.canvas.create_text(
-            40, 80, anchor="nw",
+            vp.px(40), vp.px(80), anchor="nw",
             fill="#ffd0d0",
-            width=460,
-            font=("Consolas", 11),
+            width=vp.px(460),
+            font=vp.consolas(11),
             text=""
         )
         self.info_targets["LOG"] = self.log_text
 
-        # STATS
+        # STATS (рамка в стиле терминального HUD)
+        self.stats_bg = draw_corner_frame(
+            self.canvas, vp.px(548), h - vp.px(288), vp.px(900), h - vp.px(100),
+            outline=T.SUCCESS, fill=T.PANEL_BG, frame_width=vp.wid(1),
+            bracket_len=vp.px(12), bracket_width=vp.wid(2),
+        )
+        self.canvas.create_text(
+            vp.px(560), h - vp.px(278), anchor="nw",
+            text="SESSION STATUS",
+            fill=T.SUCCESS,
+            font=vp.consolas(11, bold=True)
+        )
         self.stats_text = self.canvas.create_text(
-            560, h - 260, anchor="nw",
-            fill="white", font=("Consolas", 12)
+            vp.px(560), h - vp.px(252), anchor="nw",
+            fill=T.TEXT_BRIGHT, font=vp.consolas(12)
         )
 
         # PROGRESS BAR
-        self.BAR_Y = h - 85
-        self.progress_frame = self.canvas.create_rectangle(
-            560, self.BAR_Y, 860, self.BAR_Y + 30,
-            outline="#444"
+        self.BAR_Y = h - vp.px(85)
+        self._bar_left = vp.px(562)
+        self._bar_fill_h = vp.px(28)
+        self._bar_inner_px = vp.px(296)
+        self.progress_frame = draw_corner_frame(
+            self.canvas, vp.px(560), self.BAR_Y, vp.px(860), self.BAR_Y + vp.px(30),
+            outline=T.PANEL_OUTLINE, frame_width=vp.wid(1),
+            bracket_len=vp.px(10), bracket_width=vp.wid(2),
         )
         self.info_targets["PROGRESS"] = self.progress_frame
 
         self.progress_fill = self.canvas.create_rectangle(
-            562, self.BAR_Y + 2,
-            562, self.BAR_Y + 28,
-            fill="#48bfff", width=0
+            self._bar_left, self.BAR_Y + vp.px(2),
+            self._bar_left, self.BAR_Y + self._bar_fill_h,
+            fill=T.ACCENT, width=0
         )
+
+        # Тонкий «скан» поверх заливки — как будто сквозь бар бежит сигнал.
+        self.progress_scan = self.canvas.create_rectangle(
+            0, 0, 0, 0, fill="#eaffff", stipple="gray25", outline="",
+        )
+        self._progress_scan_phase = 0.0
+        self._tick_progress_scan()
 
         # BUTTONS
         def btn(name, y, cmd):
-            rect, _ = self.create_button(w - 180, y, name, cmd)
+            rect, _ = self.create_button(w - vp.px(180), y, name, cmd)
             self.info_targets[name] = rect
 
-        btn("START", 120, self.toggle_exfil)
-        btn("ENCRYPT", 180, self.toggle_encrypt)
-        btn("COMPRESS", 240, self.toggle_compress)
-        btn("TOR", 300, self.toggle_tor)
-        btn("INFO", 360, self.toggle_info)
-        btn("BACK", 420, self.exit)
+        btn("START", vp.px(120), self.toggle_exfil)
+        btn("ENCRYPT", vp.px(180), self.toggle_encrypt)
+        btn("COMPRESS", vp.px(240), self.toggle_compress)
+        btn("TOR", vp.px(300), self.toggle_tor)
+        btn("INFO", vp.px(360), self.toggle_info)
+        btn("BACK", vp.px(420), self.exit)
 
         # NODES
-        self.victim_x = w // 2 - 320
+        self.victim_x = w // 2 - vp.px(320)
         self.victim_y = h // 2
 
-        self.attacker_x = w // 2 + 320
+        self.attacker_x = w // 2 + vp.px(320)
         self.attacker_y = h // 2
 
         self.host_box = self.canvas.create_rectangle(
-            self.victim_x - 70, self.victim_y - 50,
-            self.victim_x + 70, self.victim_y + 50,
-            outline="#48bfff", width=2
+            self.victim_x - vp.px(70), self.victim_y - vp.px(50),
+            self.victim_x + vp.px(70), self.victim_y + vp.px(50),
+            outline=T.ACCENT, width=vp.wid(2)
         )
         self.info_targets["HOST"] = self.host_box
 
         self.drop_box = self.canvas.create_rectangle(
-            self.attacker_x - 80, self.attacker_y - 50,
-            self.attacker_x + 80, self.attacker_y + 50,
-            outline="#ff4444", width=2
+            self.attacker_x - vp.px(80), self.attacker_y - vp.px(50),
+            self.attacker_x + vp.px(80), self.attacker_y + vp.px(50),
+            outline=T.DANGER, width=vp.wid(2)
         )
         self.info_targets["DROP"] = self.drop_box
 
         self.canvas.create_line(
-            self.victim_x + 70, self.victim_y,
-            self.attacker_x - 80, self.attacker_y,
-            fill="#555", dash=(6, 3)
+            self.victim_x + vp.px(70), self.victim_y,
+            self.attacker_x - vp.px(80), self.attacker_y,
+            fill="#555", dash=vp.dash(6, 3)
         )
 
-        self.canvas.create_text(self.victim_x, self.victim_y + 80,
+        self.canvas.create_text(self.victim_x, self.victim_y + vp.px(80),
                                 text="CORPORATE HOST",
-                                fill="#48bfff",
-                                font=("Consolas", 11, "bold"))
+                                fill=T.ACCENT,
+                                font=vp.consolas(11, bold=True))
 
-        self.canvas.create_text(self.attacker_x, self.attacker_y + 80,
+        self.canvas.create_text(self.attacker_x, self.attacker_y + vp.px(80),
                                 text="REMOTE DROP ZONE",
-                                fill="#ff4444",
-                                font=("Consolas", 11, "bold"))
+                                fill=T.DANGER,
+                                font=vp.consolas(11, bold=True))
 
         self.log("[SYSTEM] DATA EXFIL MODULE INITIALIZED", "#9eff9e")
 
@@ -332,9 +381,15 @@ class DataExfilModule:
         self.tor = not self.tor
         self.log(f"[ROUTE] {'TOR ENABLED' if self.tor else 'DIRECT'}", "#ffaa00")
 
+    def _clear_packets(self) -> None:
+        for p in self.packets:
+            self.canvas.delete(p["dot"])
+            self.canvas.delete(p["label"])
+        self.packets.clear()
+
     # ================= PACKETS =================
     def spawn_packet(self):
-        if not self.exfil_active or not self.running:
+        if not self.exfil_active or not self.running or self.info_visible:
             return
 
         size = random.randint(5, 35)
@@ -342,34 +397,37 @@ class DataExfilModule:
 
         if self.compress:
             size //= 2
-            speed *= 1.4
+            speed = int(round(speed * 1.4))
 
         if self.tor:
-            speed //= 2
+            speed = max(1, speed // 2)
 
-        y = random.randint(self.victim_y - 25, self.victim_y + 25)
+        vp = self.vp
+        y = random.randint(self.victim_y - vp.px(25), self.victim_y + vp.px(25))
         dot = self.canvas.create_oval(
-            self.victim_x + 60, y - 4,
-            self.victim_x + 68, y + 4,
-            fill="#ff4444" if self.encrypt else "#48bfff",
-            outline=""
+            self.victim_x + vp.px(60), y - vp.px(4),
+            self.victim_x + vp.px(68), y + vp.px(4),
+            fill=T.DANGER if self.encrypt else T.ACCENT,
+            outline="",
+            tags=("exfil_packet",),
         )
 
         label = self.canvas.create_text(
-            self.victim_x + 50, y - 8,
+            self.victim_x + vp.px(50), y - vp.px(8),
             text=random.choice(self.files),
             fill="white",
-            font=("Consolas", 8),
-            anchor="e"
+            font=vp.consolas(8),
+            anchor="e",
+            tags=("exfil_packet",),
         )
 
-        dx = (self.attacker_x - self.victim_x - 160) / speed
+        dx = (self.attacker_x - self.victim_x - vp.px(160)) / speed
 
         self.packets.append({
             "dot": dot,
             "label": label,
             "dx": dx,
-            "target_x": self.attacker_x - 90,
+            "target_x": self.attacker_x - vp.px(90),
             "size": size,
             "speed": speed
         })
@@ -404,26 +462,51 @@ class DataExfilModule:
 
     # ================= STATS ===================
     def update_stats(self):
-        self.canvas.itemconfig(self.stats_text,
-                               text=(
-                                   "SESSION STATUS\n"
-                                   "-----------------\n"
-                                   f"DATA STOLEN: {self.data_stolen} MB\n"
-                                   f"SPEED: {self.speed} KB/s\n"
-                                   f"ENCRYPT: {'ON' if self.encrypt else 'OFF'}\n"
-                                   f"COMPRESS: {'ON' if self.compress else 'OFF'}\n"
-                                   f"TOR: {'ON' if self.tor else 'OFF'}\n"
-                                   f"RISK LEVEL: {self.risk}%\n"
-                               ))
+        self.canvas.itemconfig(
+            self.stats_text,
+            text=(
+                f"DATA STOLEN: {self.data_stolen} MB\n"
+                f"SPEED: {format_speed_kbps(self.speed)}\n"
+                f"ENCRYPT: {'ON' if self.encrypt else 'OFF'}\n"
+                f"COMPRESS: {'ON' if self.compress else 'OFF'}\n"
+                f"TOR: {'ON' if self.tor else 'OFF'}\n"
+                f"RISK LEVEL: {self.risk}%\n"
+            ),
+        )
 
-        fill = min(100, self.data_stolen)
-        width = int((fill / 100) * 296)
+        fill_pct = min(100.0, (self.data_stolen / PROGRESS_BAR_FULL_MB) * 100.0)
+        inner = getattr(self, "_bar_inner_px", self.vp.px(296))
+        width = int((fill_pct / 100.0) * inner)
+        left = getattr(self, "_bar_left", self.vp.px(562))
+        dy = self.vp.px(2)
+        y2 = self.BAR_Y + getattr(self, "_bar_fill_h", self.vp.px(28))
 
-        self.canvas.coords(self.progress_fill,
-                           562, self.BAR_Y + 2,
-                           562 + width, self.BAR_Y + 28)
+        self.canvas.coords(
+            self.progress_fill,
+            left,
+            self.BAR_Y + dy,
+            left + width,
+            y2,
+        )
 
         self.root.after(700, self.update_stats)
+
+    def _tick_progress_scan(self) -> None:
+        if not self.running:
+            return
+        self._progress_scan_phase += 0.06
+        vp = self.vp
+        fx0, fy0, fx1, fy1 = self.canvas.coords(self.progress_fill)
+        width = fx1 - fx0
+        scan_w = min(vp.px(26), max(0, width))
+        if width < vp.px(6):
+            self.canvas.coords(self.progress_scan, 0, 0, 0, 0)
+        else:
+            span = max(0.0, width - scan_w)
+            phase = (math.sin(self._progress_scan_phase) + 1) / 2
+            sx = fx0 + phase * span
+            self.canvas.coords(self.progress_scan, sx, fy0, sx + scan_w, fy1)
+        self.root.after(70, self._tick_progress_scan)
 
     # ================= INFO SYSTEM =============
     def toggle_info(self):
@@ -434,7 +517,8 @@ class DataExfilModule:
 
     def start_info_tour(self):
         self.info_visible = True
-        self.toggle_exfil()
+        self._clear_packets()
+        self.exfil_active = False
         self.info_page = 0
         self.show_info_step()
 
@@ -461,7 +545,8 @@ class DataExfilModule:
         key, raw_text = self.info_pages[self.info_page]
         text = self._wrap_text_to_box(raw_text, 50)
 
-        w, h = self.canvas.winfo_screenwidth(), self.canvas.winfo_screenheight()
+        w, h = self.w, self.h
+        vp = self.vp
 
         self.info_overlay = self.canvas.create_rectangle(
             0, 0, w, h,
@@ -473,38 +558,46 @@ class DataExfilModule:
             self.next_info()
             return
 
-        x1, y1, x2, y2 = self.canvas.bbox(target)
+        bb = self.canvas.bbox(target)
+        if not bb:
+            self.next_info()
+            return
+        x1, y1, x2, y2 = bb
 
         self.info_focus = self.canvas.create_rectangle(
-            x1 - 6, y1 - 6, x2 + 6, y2 + 6,
-            outline="#48bfff", width=2
+            x1 - vp.px(6), y1 - vp.px(6), x2 + vp.px(6), y2 + vp.px(6),
+            outline=T.ACCENT, width=vp.wid(2)
         )
 
-        BOX_W = 420
-        PADDING = 16
-        TITLE_H = 32
-        FOOTER_H = 26
+        BOX_W = vp.px(420)
+        PADDING = vp.px(16)
+        TITLE_H = vp.px(32)
+        FOOTER_H = vp.px(26)
 
         lines = text.count("\n") + 1
-        LINE_H = 18
+        LINE_H = vp.px(18)
         BODY_H = lines * LINE_H
 
-        BOX_H = TITLE_H + BODY_H + FOOTER_H + 14
+        BOX_H = TITLE_H + BODY_H + FOOTER_H + vp.px(14)
 
-        box_x = x2 + 20 if x2 + BOX_W < w else x1 - BOX_W - 20
-        box_y = min(y1, h - BOX_H - 20)
+        gap = vp.px(20)
+        box_x = x2 + gap if x2 + gap + BOX_W <= w - gap else x1 - BOX_W - gap
+        # Держим окно INFO целиком на экране (широкие цели иначе выталкивают
+        # его за край и текст обрезается).
+        box_x = max(gap, min(box_x, w - BOX_W - gap))
+        box_y = max(0, min(y1, h - BOX_H - gap))
 
         self.info_box = self.canvas.create_rectangle(
             box_x, box_y, box_x + BOX_W, box_y + BOX_H,
-            fill="#05080c", outline="#48bfff", width=2
+            fill=T.INFO_BG, outline=T.ACCENT, width=vp.wid(2)
         )
 
         self.info_title = self.canvas.create_text(
             box_x + BOX_W // 2,
-            box_y + 16,
+            box_y + vp.px(16),
             text=key,
-            fill="#48bfff",
-            font=("Consolas", 13, "bold")
+            fill=T.ACCENT,
+            font=vp.consolas(13, bold=True)
         )
 
         self.info_text = self.canvas.create_text(
@@ -512,17 +605,17 @@ class DataExfilModule:
             box_y + TITLE_H,
             anchor="nw",
             text=text,
-            fill="#aee6ff",
+            fill=T.INFO_TEXT,
             width=BOX_W - PADDING * 2,
-            font=("Consolas", 11),
+            font=vp.consolas(11),
             justify="left"
         )
 
         self.info_counter = self.canvas.create_text(
-            box_x + BOX_W // 2, box_y + BOX_H - 12,
+            box_x + BOX_W // 2, box_y + BOX_H - vp.px(12),
             text=f"{self.info_page + 1}/{len(self.info_pages)}  (CLICK)",
-            fill="#48bfff",
-            font=("Consolas", 9, "bold")
+            fill=T.ACCENT,
+            font=vp.consolas(9, bold=True)
         )
 
         for obj in (self.info_overlay, self.info_box, self.info_text):
@@ -532,77 +625,112 @@ class DataExfilModule:
                     self.info_box, self.info_text, self.info_counter, self.info_title):
             self.canvas.tag_raise(obj)
 
+        if self.canvas.find_withtag("mivlgu"):
+            self.canvas.tag_raise("mivlgu")
+
     def show_big_theory_panels(self):
         self.clear_info()
-        w, h = self.canvas.winfo_screenwidth(), self.canvas.winfo_screenheight()
+        self._clear_packets()
+        self.exfil_active = False
+        w, h = self.w, self.h
+        vp = self.vp
 
         self.info_overlay = self.canvas.create_rectangle(
             0, 0, w, h,
-            fill="black", stipple="gray50"
+            fill="#000510", stipple="gray50"
         )
 
+        p1x1, p1y1 = w // 2 - vp.px(460), h // 2 - vp.px(200)
+        p1x2, p1y2 = w // 2 - vp.px(40), h // 2 + vp.px(200)
         self.info_big_panel1 = self.canvas.create_rectangle(
-            w//2 - 460, h//2 - 200,
-            w//2 - 40,  h//2 + 200,
-            fill="#08090d", outline="#48bfff", width=2
+            p1x1, p1y1, p1x2, p1y2,
+            fill="#040608", outline=T.SUCCESS, width=vp.wid(2)
         )
 
+        p2x1, p2y1 = w // 2 + vp.px(40), h // 2 - vp.px(200)
+        p2x2, p2y2 = w // 2 + vp.px(460), h // 2 + vp.px(200)
         self.info_big_panel2 = self.canvas.create_rectangle(
-            w//2 + 40,  h//2 - 200,
-            w//2 + 460, h//2 + 200,
-            fill="#08090d", outline="#ff6666", width=2
+            p2x1, p2y1, p2x2, p2y2,
+            fill="#040608", outline=T.DANGER, width=vp.wid(2)
         )
 
+        body1 = self._wrap_text_to_box(
+            "ЧТО ТАКОЕ DATA EXFIL\n\n"
+            "Это скрытая утечка данных:\n\n"
+            "• тайная передача файлов\n"
+            "• кража информации\n"
+            "• отправка на внешний сервер\n\n"
+            "Используется в:\n"
+            "• троянах\n"
+            "• APT атаках\n"
+            "• ботнетах\n"
+            "• шпионских ПО",
+            40,
+        )
         self.info_big_text1 = self.canvas.create_text(
-            w//2 - 250, h//2,
-            text=self._wrap_text_to_box(
-                "ЧТО ТАКОЕ DATA EXFIL\n\n"
-                "Это скрытая утечка данных:\n\n"
-                "• тайная передача файлов\n"
-                "• кража информации\n"
-                "• отправка на внешний сервер\n\n"
-                "Используется в:\n"
-                "• троянах\n"
-                "• APT атаках\n"
-                "• ботнетах\n"
-                "• шпионских ПО", 40),
-            fill="#aee6ff",
-            font=("Consolas", 12),
-            width=360,
-            justify="left"
+            p1x1 + vp.px(22),
+            p1y1 + vp.px(24),
+            anchor="nw",
+            text=body1,
+            fill="#b8ffe8",
+            font=vp.consolas(12),
+            width=p1x2 - p1x1 - vp.px(44),
+            justify="left",
         )
 
+        body2 = self._wrap_text_to_box(
+            "КАК ЗАЩИЩАТЬСЯ\n\n"
+            "• IDS / IPS\n"
+            "• DLP системы\n"
+            "• мониторинг трафика\n"
+            "• анализ процессов\n\n"
+            "• шифрование каналов\n"
+            "• контроль DNS\n"
+            "• сегментация сети\n\n"
+            "Главное — видеть аномалии",
+            40,
+        )
         self.info_big_text2 = self.canvas.create_text(
-            w//2 + 250, h//2,
-            text=self._wrap_text_to_box(
-                "КАК ЗАЩИЩАТЬСЯ\n\n"
-                "• IDS / IPS\n"
-                "• DLP системы\n"
-                "• мониторинг трафика\n"
-                "• анализ процессов\n\n"
-                "• шифрование каналов\n"
-                "• контроль DNS\n"
-                "• сегментация сети\n\n"
-                "Главное — видеть аномалии", 40),
-            fill="#ffd0d0",
-            font=("Consolas", 12),
-            width=360,
-            justify="left"
+            p2x1 + vp.px(22),
+            p2y1 + vp.px(24),
+            anchor="nw",
+            text=body2,
+            fill="#ffd6d6",
+            font=vp.consolas(12),
+            width=p2x2 - p2x1 - vp.px(44),
+            justify="left",
         )
 
         self.info_counter = self.canvas.create_text(
-            w//2, h - 40,
+            w // 2, h - vp.px(40),
             text="CLICK TO EXIT INFO",
-            fill="#48bfff",
-            font=("Consolas", 11, "bold")
+            fill=T.SUCCESS,
+            font=vp.consolas(11, bold=True)
         )
 
-        for obj in (self.info_overlay,
-                    self.info_big_panel1, self.info_big_text1,
-                    self.info_big_panel2, self.info_big_text2,
-                    self.info_counter):
+        for obj in (
+            self.info_overlay,
+            self.info_big_panel1,
+            self.info_big_text1,
+            self.info_big_panel2,
+            self.info_big_text2,
+            self.info_counter,
+        ):
             self.canvas.tag_bind(obj, "<Button-1>", self.hide_info)
-            self.canvas.tag_raise(obj)
+
+        # Важно: затемнение — снизу, панели и текст — НАД ним (иначе текст не виден).
+        self.canvas.tag_raise(self.info_overlay)
+        for item in (
+            self.info_big_panel1,
+            self.info_big_panel2,
+            self.info_big_text1,
+            self.info_big_text2,
+            self.info_counter,
+        ):
+            self.canvas.tag_raise(item)
+
+        if self.canvas.find_withtag("mivlgu"):
+            self.canvas.tag_raise("mivlgu")
 
     def next_info(self, e=None):
         self.info_page += 1
@@ -629,7 +757,10 @@ class DataExfilModule:
 
     # ================= EXIT ===================
     def exit(self):
+        if getattr(self, "_exiting", False):
+            return
+        self._exiting = True
         self.running = False
         self.canvas.delete("all")
         self.matrix_active = False
-        self.exit_callback()
+        self.on_exit()

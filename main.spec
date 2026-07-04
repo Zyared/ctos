@@ -3,7 +3,7 @@
 
 a = Analysis(
     ['main.py'],
-    pathex=[],
+    pathex=['.'],
     binaries=[],
     datas=[('sound', 'sound'), ('music.mp3', '.')],
     hiddenimports=[],

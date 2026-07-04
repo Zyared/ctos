@@ -4,6 +4,9 @@ import math
 import time
 import random
 import pygame
+
+from ctos.config import SOUND_DIR
+from ctos.ui.viewport import Viewport
 # ---------- Типы узлов ---------- #
 TYPE_NORMAL = "normal"
 TYPE_LINE = "line"
@@ -102,6 +105,7 @@ class ZeroDownModule:
         self.elapsed_final = 0.0
         self.level_completed = False
         self.success_shown = False
+        self._exit_guard = False
         # фоновые частицы (x, y, dx, dy, r)
         self.bg_particles = [
             {
@@ -124,7 +128,7 @@ class ZeroDownModule:
         # SOUND SYSTEM
         pygame.mixer.init()
         self.sounds = {}
-        base = os.path.join(os.path.dirname(__file__), "sound")
+        base = SOUND_DIR
         self.sounds["pulse"] = pygame.mixer.Sound(os.path.join(base, "pulse.mp3"))
         self.sounds["lock_open"] = pygame.mixer.Sound(os.path.join(base, "lock_open.mp3"))
         # громкость
@@ -132,6 +136,11 @@ class ZeroDownModule:
         self.sounds["lock_open"].set_volume(0.5)
         # запуск анимации
         self.animate()
+
+    def start(self) -> None:
+        """ExploitModule: полная инициализация выполняется в __init__."""
+        return
+
     # ================= УТИЛИТЫ ПОСТРОЕНИЯ УРОВНЯ ================= #
     def clear_graph(self):
         self.nodes.clear()
@@ -277,10 +286,13 @@ class ZeroDownModule:
         """
         Авто-центрирование сетки по размерам окна.
         """
+        self.vp = Viewport.from_canvas(self.canvas, self.root)
+        vp = self.vp
+        self.spacing = vp.px(160)
+        self.margin = vp.px(70)
         if not self.nodes:
             self.origin_x = w // 2
             self.origin_y = h // 2
-            self.margin = 70
             return
         cols = [n.col for n in self.nodes.values()]
         rows = [n.row for n in self.nodes.values()]
@@ -292,7 +304,6 @@ class ZeroDownModule:
         grid_cy = (min_r + max_r) / 2.0
         self.origin_x = cx - grid_cx * self.spacing
         self.origin_y = cy - grid_cy * self.spacing
-        self.margin = 70
     def node_xy(self, node: WDNode) -> tuple[int, int]:
         x = self.origin_x + node.col * self.spacing
         y = self.origin_y + node.row * self.spacing
@@ -409,6 +420,7 @@ class ZeroDownModule:
             h = int(self.canvas["height"])
         self.compute_layout(w, h)
         margin = self.margin
+        vp = self.vp
         # фон
         self.draw_background(w, h)
         # рамка
@@ -416,34 +428,34 @@ class ZeroDownModule:
             margin, margin,
             w - margin, h - margin,
             outline="#1b2835",
-            width=3,
+            width=vp.wid(3),
             tags=self.layer_tag,
         )
         # заголовок
         self.canvas.create_text(
-            w // 2, margin - 25,
+            w // 2, margin - vp.px(25),
             text="CtOS  //  ZERO-DAY NODE GRID",
             fill="#7de4ff",
-            font=("Consolas", 16, "bold"),
+            font=vp.consolas(16, bold=True),
             tags=self.layer_tag,
         )
         self.canvas.create_text(
-            w // 2, margin - 8,
+            w // 2, margin - vp.px(8),
             text="Rotate nodes to route power from START through GATE to EXIT",
             fill="#4b6c7f",
-            font=("Consolas", 10),
+            font=vp.consolas(10),
             tags=self.layer_tag,
         )
         # UI-EXIT
-        btn_w, btn_h = 90, 28
+        btn_w, btn_h = vp.px(90), vp.px(28)
         bx2 = w - margin
         bx1 = bx2 - btn_w
-        by1 = margin - 40
+        by1 = margin - vp.px(40)
         by2 = by1 + btn_h
         self.ui_exit_bbox = (bx1, by1, bx2, by2)
         self.canvas.create_rectangle(
             bx1, by1, bx2, by2,
-            outline="#ff4444", width=2,
+            outline="#ff4444", width=vp.wid(2),
             tags=self.layer_tag,
         )
         self.canvas.create_text(
@@ -451,7 +463,7 @@ class ZeroDownModule:
             (by1 + by2) // 2,
             text="EXIT",
             fill="#ff4444",
-            font=("Consolas", 11, "bold"),
+            font=vp.consolas(11, bold=True),
             tags=self.layer_tag,
         )
         # рёбра
@@ -467,14 +479,15 @@ class ZeroDownModule:
             elapsed = self.elapsed_final
         timer_text = self.format_time(elapsed)
         self.canvas.create_text(
-            w - margin - 80, margin,
+            w - margin - vp.px(80), margin,
             text=timer_text,
             fill="#55caff",
-            font=("Consolas", 16, "bold"),
+            font=vp.consolas(16, bold=True),
             tags=self.layer_tag,
         )
     # ---------------- Фон ---------------- #
     def draw_background(self, w: int, h: int):
+        vp = self.vp
         # Тёмный фон
         self.canvas.create_rectangle(
             0, 0, w, h,
@@ -483,33 +496,35 @@ class ZeroDownModule:
             tags=self.layer_tag,
         )
         # Неоновая сетка
-        cell = 80
+        cell = vp.px(80)
+        cell = max(24, cell)
         offset = int((self.ticks * 0.5) % cell)
         for x in range(-cell, w + cell, cell):
             self.canvas.create_line(
                 x + offset, 0, x + offset, h,
                 fill="#08222f",
-                width=1,
+                width=vp.wid(1),
                 tags=self.layer_tag,
             )
         for y in range(-cell, h + cell, cell):
             self.canvas.create_line(
                 0, y + offset, w, y + offset,
                 fill="#08222f",
-                width=1,
+                width=vp.wid(1),
                 tags=self.layer_tag,
             )
         # Неоновые частицы
         for p in self.bg_particles:
             px = int(p["x"] * w)
             py = int(p["y"] * h)
-            r = p["r"]
+            r = p["r"] * vp.scale
             # лёгкая пульсация яркости
             pulse = 0.5 + 0.5 * math.sin(self.ticks / 15.0 + px * 0.01)
             c = int(80 + 80 * pulse)
             color = f"#{0:02x}{c:02x}{255:02x}"
+            rr = max(1.0, r)
             self.canvas.create_oval(
-                px - r, py - r, px + r, py + r,
+                px - rr, py - rr, px + rr, py + rr,
                 fill=color,
                 outline="",
                 tags=self.layer_tag,
@@ -519,12 +534,13 @@ class ZeroDownModule:
         x2, y2 = self.node_xy(b)
         active = a.powered and b.powered
         color = "#55caff" if active else "#2a3b47"
-        width = 4 if active else 2
+        vp = self.vp
+        lw = vp.wid(4) if active else vp.wid(2)
         # основная линия
         self.canvas.create_line(
             x1, y1, x2, y2,
             fill=color,
-            width=width,
+            width=lw,
             capstyle="round",
             tags=self.layer_tag,
         )
@@ -535,7 +551,7 @@ class ZeroDownModule:
                 t = (base_t + phase) % 1.0
                 px = x1 + (x2 - x1) * t
                 py = y1 + (y2 - y1) * t
-                r = 4
+                r = vp.px(4)
                 self.canvas.create_oval(
                     px - r, py - r, px + r, py + r,
                     outline="",
@@ -554,8 +570,9 @@ class ZeroDownModule:
             self.draw_exit_node(node, x, y)
     # ------------------- КРУГОВЫЕ УЗЛЫ ------------------- #
     def draw_circle_node(self, node: WDNode, x: int, y: int):
-        outer_r = 22
-        inner_r = 15
+        vp = self.vp
+        outer_r = vp.px(22)
+        inner_r = vp.px(15)
         # Внешний пунктир (вращающийся при питании)
         if node.powered:
             outline = "#88caff"
@@ -567,8 +584,8 @@ class ZeroDownModule:
             x - outer_r, y - outer_r,
             x + outer_r, y + outer_r,
             outline=outline,
-            width=2,
-            dash=(3, 3),
+            width=vp.wid(2),
+            dash=vp.dash(3, 3),
             dashoffset=dash_offset,
             tags=self.layer_tag,
         )
@@ -578,7 +595,7 @@ class ZeroDownModule:
             x + inner_r, y + inner_r,
             outline="#000000",
             fill="#000000",
-            width=2,
+            width=vp.wid(2),
             tags=self.layer_tag,
         )
         # шаблон узла (линия, угол, крест)
@@ -598,46 +615,46 @@ class ZeroDownModule:
         ca, sa = math.cos(a), math.sin(a)
         return dx * ca - dy * sa, dx * sa + dy * ca
     def draw_direction_marker(self, node: WDNode, x: int, y: int, color: str):
-        L = 11
+        L = self.vp.px(11)
         dx, dy = self._rot(0, -L, node.visual_angle)
         self.canvas.create_line(
             x, y, x + dx, y + dy,
             fill=color,
-            width=3,
+            width=self.vp.wid(3),
             tags=self.layer_tag,
         )
     # --------- LINE --------- #
     def draw_line_template(self, node: WDNode, x: int, y: int, color: str):
-        L = 13
+        L = self.vp.px(13)
         dx1, dy1 = self._rot(0, -L, node.visual_angle)
         dx2, dy2 = self._rot(0, L, node.visual_angle)
         self.canvas.create_line(
             x + dx1, y + dy1, x + dx2, y + dy2,
             fill=color,
-            width=2,
+            width=self.vp.wid(2),
             tags=self.layer_tag,
         )
     # --------- CORNER --------- #
     def draw_corner_template(self, node: WDNode, x: int, y: int, color: str):
-        L = 11
+        L = self.vp.px(11)
         # база: угол UP+RIGHT => (0,-L) и (L,0)
         dx1, dy1 = self._rot(0, -L, node.visual_angle)
         dx2, dy2 = self._rot(L, 0, node.visual_angle)
         self.canvas.create_line(
             x, y, x + dx1, y + dy1,
             fill=color,
-            width=2,
+            width=self.vp.wid(2),
             tags=self.layer_tag,
         )
         self.canvas.create_line(
             x, y, x + dx2, y + dy2,
             fill=color,
-            width=2,
+            width=self.vp.wid(2),
             tags=self.layer_tag,
         )
     # --------- CROSS --------- #
     def draw_cross_template(self, node: WDNode, x: int, y: int, color: str):
-        L = 10
+        L = self.vp.px(10)
         dx1, dy1 = self._rot(-L, 0, node.visual_angle)
         dx2, dy2 = self._rot(L, 0, node.visual_angle)
         dx3, dy3 = self._rot(0, -L, node.visual_angle)
@@ -645,18 +662,18 @@ class ZeroDownModule:
         self.canvas.create_line(
             x + dx1, y + dy1, x + dx2, y + dy2,
             fill=color,
-            width=2,
+            width=self.vp.wid(2),
             tags=self.layer_tag,
         )
         self.canvas.create_line(
             x + dx3, y + dy3, x + dx4, y + dy4,
             fill=color,
-            width=2,
+            width=self.vp.wid(2),
             tags=self.layer_tag,
         )
     # ---------------- GATE ---------------- #
     def draw_gate_node(self, node: WDNode, x: int, y: int):
-        size = 26
+        size = self.vp.px(26)
         col = "#6fd6ff" if node.powered else "#ffffff"
         self.canvas.create_polygon(
             x, y - size,
@@ -665,19 +682,19 @@ class ZeroDownModule:
             x - size, y,
             outline=col,
             fill="#000000",
-            width=3,
+            width=self.vp.wid(3),
             tags=self.layer_tag,
         )
         self.canvas.create_text(
             x, y,
             text="🔒",
             fill=col,
-            font=("Consolas", 18),
+            font=self.vp.consolas(18),
             tags=self.layer_tag,
         )
     # ---------------- START ---------------- #
     def draw_start_node(self, node: WDNode, x: int, y: int):
-        size = 26
+        size = self.vp.px(26)
         col = "#ffffff"
         self.canvas.create_polygon(
             x, y - size,
@@ -686,11 +703,12 @@ class ZeroDownModule:
             x - size, y,
             outline=col,
             fill="#000000",
-            width=3,
+            width=self.vp.wid(3),
             tags=self.layer_tag,
         )
-        mini = 8
-        offsets = [(-10, 0), (10, 0), (0, -10), (0, 10)]
+        mini = self.vp.px(8)
+        o = self.vp.px(10)
+        offsets = [(-o, 0), (o, 0), (0, -o), (0, o)]
         for dx, dy in offsets:
             cx = x + dx
             cy = y + dy
@@ -701,12 +719,12 @@ class ZeroDownModule:
                 cx - mini, cy,
                 outline=col,
                 fill="",
-                width=2,
+                width=self.vp.wid(2),
                 tags=self.layer_tag,
             )
     # ---------------- EXIT ---------------- #
     def draw_exit_node(self, node: WDNode, x: int, y: int):
-        size = 26
+        size = self.vp.px(26)
         if node.powered:
             pulse = 0.4 + 0.6 * abs(math.sin(self.ticks / 10.0))
             g = int(255 * pulse)
@@ -720,18 +738,21 @@ class ZeroDownModule:
             x - size, y,
             outline=outline,
             fill="#000000",
-            width=3,
+            width=self.vp.wid(3),
             tags=self.layer_tag,
         )
         self.canvas.create_text(
             x, y,
             text="EXIT",
             fill=outline,
-            font=("Consolas", 11, "bold"),
+            font=self.vp.consolas(11, bold=True),
             tags=self.layer_tag,
         )
     # ====================== ВЗАИМОДЕЙСТВИЕ ====================== #
     def _on_escape(self, event=None):
+        if self._exit_guard:
+            return
+        self._exit_guard = True
         self.anim_loop_running = False
         self.canvas.unbind("<Button-1>")
         self.root.unbind("<Escape>")
@@ -742,8 +763,9 @@ class ZeroDownModule:
             return False
         x1, y1, x2, y2 = self.ui_exit_bbox
         return x1 <= x <= x2 and y1 <= y <= y2
-    def find_node_by_point(self, x: int, y: int, radius: int = 26) -> WDNode | None:
-        r2 = radius * radius
+    def find_node_by_point(self, x: int, y: int, radius: int | None = None) -> WDNode | None:
+        r = self.vp.px(26) if radius is None else radius
+        r2 = r * r
         for node in self.nodes.values():
             nx, ny = self.node_xy(node)
             dx = nx - x
@@ -791,6 +813,7 @@ class ZeroDownModule:
             w = int(self.canvas["width"])
         if h <= 1:
             h = int(self.canvas["height"])
+        vp = getattr(self, "vp", None) or Viewport.from_canvas(self.canvas, self.root)
         # затемнение фона
         self.canvas.create_rectangle(
             0, 0, w, h,
@@ -799,8 +822,8 @@ class ZeroDownModule:
             tags=self.layer_tag,
         )
         # размеры панели (как у DataExfil-плашки)
-        box_w = 700
-        box_h = 360
+        box_w = vp.px(700)
+        box_h = vp.px(360)
         x0 = (w - box_w) // 2
         y0 = (h - box_h) // 2
         x1 = x0 + box_w
@@ -809,24 +832,24 @@ class ZeroDownModule:
         self.canvas.create_rectangle(
             x0, y0, x1, y1,
             outline="#48bfff",
-            width=2,
+            width=vp.wid(2),
             fill="#020b13",
             tags=self.layer_tag,
         )
         # заголовок
         self.canvas.create_text(
-            (x0 + x1) // 2, y0 + 35,
+            (x0 + x1) // 2, y0 + vp.px(35),
             text="ZERO-DAY VULNERABILITY DISCOVERED\n",
             fill="#48bfff",
-            font=("Consolas", 18, "bold"),
+            font=vp.consolas(18, bold=True),
             tags=self.layer_tag,
         )
         # время
         self.canvas.create_text(
-            (x0 + x1) // 2, y0 + 70,
+            (x0 + x1) // 2, y0 + vp.px(70),
             text=f"Time: {self.format_time(self.elapsed_final)}\n",
             fill="#7de4ff",
-            font=("Consolas", 14, "bold"),
+            font=vp.consolas(14, bold=True),
             tags=self.layer_tag,
         )
         # описание
@@ -849,23 +872,23 @@ class ZeroDownModule:
             "\n"
         )
         self.canvas.create_text(
-            (x0 + x1) // 2, y0 + 160,
+            (x0 + x1) // 2, y0 + vp.px(160),
             text=description,
             fill="#cdeaff",
-            font=("Consolas", 12),
-            width=box_w - 80,
+            font=vp.consolas(12),
+            width=box_w - vp.px(80),
             justify="center",
             tags=self.layer_tag,
         )
         # кнопка CLOSE
-        btn_x0 = (x0 + x1) // 2 - 90
-        btn_x1 = (x0 + x1) // 2 + 90
-        btn_y0 = y1 - 60
-        btn_y1 = y1 - 20
+        btn_x0 = (x0 + x1) // 2 - vp.px(90)
+        btn_x1 = (x0 + x1) // 2 + vp.px(90)
+        btn_y0 = y1 - vp.px(60)
+        btn_y1 = y1 - vp.px(20)
         btn = self.canvas.create_rectangle(
             btn_x0, btn_y0, btn_x1, btn_y1,
             outline="#48bfff",
-            width=2,
+            width=vp.wid(2),
             fill="",
             tags=self.layer_tag,
         )
@@ -874,7 +897,7 @@ class ZeroDownModule:
             (btn_y0 + btn_y1) // 2,
             text="CLOSE",
             fill="#48bfff",
-            font=("Consolas", 13, "bold"),
+            font=vp.consolas(13, bold=True),
             tags=self.layer_tag,
         )
         def on_enter(event):
